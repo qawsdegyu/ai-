@@ -10,14 +10,14 @@
       "use": "@vercel/static-build"
     }
   ],
-  "routes": [
+  "rewrites": [
     {
-      "src": "/api/(.*)",
-      "dest": "/server/_core/index.ts"
+      "source": "/api/(.*)",
+      "destination": "/server/_core/index.ts"
     },
     {
-      "src": "/(.*)",
-      "dest": "/index.html"
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
   ]
 }
