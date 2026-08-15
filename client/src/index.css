@@ -1,0 +1,152 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@theme {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius: var(--radius);
+}
+:root {
+  --background: #020813;
+  --foreground: #e2e8f0;
+  --card: #0b1527;
+  --card-foreground: #e2e8f0;
+  --popover: #0b1527;
+  --popover-foreground: #e2e8f0;
+  --primary: #0ea5e9;
+  --primary-foreground: #ffffff;
+  --secondary: #1e293b;
+  --secondary-foreground: #94a3b8;
+  --muted: #0f172a;
+  --muted-foreground: #64748b;
+  --accent: #1e293b;
+  --accent-foreground: #38bdf8;
+  --destructive: #ef4444;
+  --border: #1e293b;
+  --input: #1e293b;
+  --ring: #38bdf8;
+  --radius: 0.5rem;
+}
+
+* { border-color: var(--border); }
+html, body, #root { min-height: 100%; }
+body { margin: 0; background: var(--background); color: var(--foreground); font-family: 'DM Sans', sans-serif; }
+h1, h2, h3, h4, .font-display { font-family: 'Space Grotesk', sans-serif; }
+button, input, select, textarea { font-family: inherit; }
+
+.aviation-hero { background: radial-gradient(circle at 76% 30%, rgba(14, 165, 233, .12), transparent 24%), linear-gradient(135deg, #010610 0%, #061124 52%, #0b1527 100%); border: 1px solid rgba(14, 165, 233, 0.15); box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.5); }
+.logo-mark { display: grid; place-items: center; width: 43px; height: 43px; border: 1px solid rgba(14, 165, 233, .35); border-radius: 10px; color: #38bdf8; background: rgba(14, 165, 233, .1); transform: rotate(-8deg); box-shadow: 0 0 15px rgba(14, 165, 233, 0.2); }
+.logo-mark svg { transform: rotate(8deg); }
+.status-dot { width: 6px; height: 6px; border-radius: 99px; background: #38bdf8; box-shadow: 0 0 10px 2px rgba(56, 189, 248, .4); animation: pulse-cyan 2s infinite; }
+@keyframes pulse-cyan { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+.hero-route { position: relative; height: 130px; margin-bottom: 10px; opacity: .8; }
+.route-line { position: absolute; top: 67px; left: 35px; right: 35px; border-top: 2px dashed rgba(56, 189, 248, .35); transform: rotate(-15deg); }
+.route-plane { position: absolute; top: 35px; left: 49%; display: grid; place-items: center; width: 38px; height: 38px; color: #e2e8f0; border: 1px solid rgba(56, 189, 248, .5); border-radius: 50%; background: rgba(56, 189, 248, .15); transform: rotate(18deg); box-shadow: 0 0 20px rgba(56, 189, 248, 0.2); }
+.route-label { position: absolute; font-size: 9px; font-weight: 700; letter-spacing: .2em; color: rgba(148, 163, 184, .8); }
+.route-a { top: 18px; left: 16px; }.route-b { bottom: 10px; right: 13px; }
+.stat-card { position: relative; background: rgba(11, 21, 39, .9); border: 1px solid rgba(56, 189, 248, 0.1); backdrop-filter: blur(10px); transition: transform .18s cubic-bezier(.23,1,.32,1), box-shadow .18s ease, border-color .18s ease; }.stat-card:hover { transform: translateY(-3px); box-shadow: 0 10px 30px rgba(14, 165, 233, .15); border-color: rgba(56, 189, 248, 0.3); }
+@media (prefers-reduced-motion: reduce) { .stat-card { transition: none; } }
+
+/* Flight Deck responsive performance layer */
+html {
+  min-height: 100%;
+  background: var(--background);
+  color-scheme: light;
+  text-rendering: optimizeLegibility;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100dvh;
+  isolation: isolate;
+}
+
+button, a, input, select, textarea {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button, a {
+  touch-action: manipulation;
+}
+
+img, svg, video, canvas {
+  max-width: 100%;
+}
+
+.fd-surface {
+  background: color-mix(in srgb, var(--card) 92%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  box-shadow: 0 12px 36px rgba(14, 68, 48, .06);
+}
+
+.fd-page {
+  width: 100%;
+  min-width: 0;
+  max-width: 1680px;
+  margin-inline: auto;
+}
+
+@media (max-width: 767px) {
+  .fd-page {
+    padding-inline: .25rem;
+  }
+  .aviation-hero {
+    border-radius: 1rem;
+    padding-inline: 1rem;
+  }
+  .hero-route {
+    height: 78px;
+  }
+  .route-line {
+    left: 12px;
+    right: 12px;
+    top: 42px;
+  }
+  .route-plane {
+    top: 18px;
+    width: 32px;
+    height: 32px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .fd-interactive {
+    transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+  }
+  .fd-interactive:hover {
+    transform: translateY(-2px);
+  }
+}
