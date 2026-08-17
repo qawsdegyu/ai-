@@ -240,3 +240,23 @@ export const fileCellSources = pgView("file_cell_sources").as((qb) => {
   .innerJoin(uploadedFiles, sql`${fileCells.file_id} = ${uploadedFiles.id}`);
 });
 
+export const imcanReferenceData = pgTable("imcan_reference_data", {
+  id: serial("id").primaryKey(),
+  sheetName: text("sheet_name"),
+  rowIndex: integer("row_index"),
+  itemName: text("item_name"),
+  category: text("category"),
+  fullData: jsonb("full_data")
+});
+
+export const imcanEucImages = pgTable("imcan_euc_images", {
+  id: serial("id").primaryKey(),
+  contentType: text("content_type"),
+  base64Data: text("base64_data")
+});
+
+export const imcanEucData = pgTable("imcan_euc_data", {
+  id: serial("id").primaryKey(),
+  documentName: text("document_name"),
+  contentChunk: text("content_chunk")
+});

@@ -2,123 +2,173 @@ import { useState, useMemo, useEffect } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { FileSpreadsheet, Plus, Trash2 } from "lucide-react";
+import { Database, LayoutGrid, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 export default function DataEditor() {
   const { user } = useAuth();
   const [search, setSearch] = useState("");
-  const [sourceType, setSourceType] = useState<string | null>(null);
+  const [sheetName, setSheetName] = useState<string>("");
 
-  const { data: records = [], isLoading, refetch } = trpc.inventory.list.useQuery({ search });
-
-  const sources = useMemo(() => Array.from(new Set(records.map(r => r.source))).filter(Boolean), [records]);
-
+  const { data: sheets = [] } = trpc.inventory.getReferenceSheets.useQuery();
+  
   useEffect(() => {
-    if (!sourceType && sources.length > 0) {
-      setSourceType(sources[0]);
+    if (!sheetName && sheets.length > 0) {
+      setSheetName(sheets[0]);
     }
-  }, [sources, sourceType]);
+  }, [sheets, sheetName]);
 
-  const updateMutation = trpc.inventory.updateRecord.useMutation({
+  const { data: records = [], isLoading, refetch } = trpc.inventory.getReferenceData.useQuery(
+    { sheetName: sheetName || undefined }, 
+    { enabled: !!sheetName }
+  );
+
+  const updateMutation = trpc.inventory.updateReferenceData.useMutation({
     onSuccess: () => refetch(),
     onError: (err) => toast.error(`Failed to update: ${err.message}`)
   });
 
-  const addMutation = trpc.inventory.addRecord.useMutation({
-    onSuccess: () => { refetch(); toast.success("Row added"); },
-    onError: (err) => toast.error(`Failed to add: ${err.message}`)
-  });
-
-  const deleteMutation = trpc.inventory.deleteRecord.useMutation({
+  const deleteMutation = trpc.inventory.deleteReferenceData.useMutation({
     onSuccess: () => { refetch(); toast.success("Row deleted"); },
     onError: (err) => toast.error(`Failed to delete: ${err.message}`)
   });
 
-  const handleCellChange = async (id: number, field: string, value: string, originalValue: string) => {
-    if (value === originalValue) return;
-    const promise = updateMutation.mutateAsync({ id, data: { [field]: value } });
+  // Calculate dynamic columns based on fullData keys
+  const columns = useMemo(() => {
+    if (!records.length) return [];
+    const keys = new Set<string>();
+    records.forEach(r => {
+      if (r.fullData && typeof r.fullData === 'object') {
+        Object.keys(r.fullData).forEach(k => keys.add(k));
+      }
+    });
+    return Array.from(keys);
+  }, [records]);
+
+  // Filter based on search
+  const displayRecords = useMemo(() => {
+    if (!search.trim()) return records;
+    const term = search.toLowerCase();
+    return records.filter(r => {
+      if (r.itemName?.toLowerCase().includes(term)) return true;
+      if (r.category?.toLowerCase().includes(term)) return true;
+      if (r.fullData && typeof r.fullData === 'object') {
+        return Object.values(r.fullData).some(v => String(v).toLowerCase().includes(term));
+      }
+      return false;
+    });
+  }, [records, search]);
+
+  const handleCellChange = async (id: number, field: string, newValue: string, record: any) => {
+    const fullData = { ...(record.fullData || {}) };
+    const originalValue = String(fullData[field] || "");
+    if (newValue === originalValue) return;
+    
+    fullData[field] = newValue;
+    const promise = updateMutation.mutateAsync({ id, fullData });
     toast.promise(promise, { loading: "Saving...", success: "Saved automatically", error: "Failed to save" });
   };
 
-  const displayRecords = records.filter(row => row.source === sourceType);
-
   return (
-    <div className="space-y-4 flex flex-col h-[calc(100vh-6rem)]">
-      <div className="flex justify-between items-center bg-[#18553d] px-4 py-3 rounded-lg text-white shadow-sm flex-shrink-0">
-        <div className="flex items-center gap-4 text-[#7de7ff]">
-          <FileSpreadsheet size={18} /> 
+    <div className="space-y-6 flex flex-col h-[calc(100vh-6rem)] relative">
+      <div className="absolute inset-0 bg-[#061124]/40 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(56,189,248,0.1),rgba(255,255,255,0))] rounded-xl pointer-events-none" />
+      
+      <div className="relative flex justify-between items-center bg-[#0b1527] border border-[#1e293b] px-5 py-4 rounded-xl text-white shadow-[0_16px_40px_rgba(0,0,0,0.3)] flex-shrink-0 z-10">
+        <div className="flex items-center gap-4">
+          <div className="bg-[#0f172a] p-2.5 rounded-lg border border-[#38bdf8]/20 text-[#38bdf8]">
+            <Database size={20} />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold text-[#e2e8f0] tracking-tight">Imcan Data Grid</h2>
+            <p className="text-[11px] text-slate-400 font-medium uppercase tracking-wider">Live Database Connection</p>
+          </div>
+          
+          <div className="h-8 w-px bg-[#1e293b] mx-2" />
+          
           <select 
-            className="bg-[#0b1527]/10 border border-white/20 text-white rounded-md px-2 py-1 outline-none focus:ring-1 focus:ring-[#7de7ff] text-sm font-semibold"
-            value={sourceType || ""}
-            onChange={e => setSourceType(e.target.value)}
+            className="bg-[#0f172a] border border-[#1e293b] text-[#e2e8f0] rounded-lg px-4 py-2 outline-none focus:ring-1 focus:ring-[#38bdf8] text-sm font-medium cursor-pointer shadow-inner appearance-none pr-8 relative min-w-[200px]"
+            value={sheetName}
+            onChange={e => setSheetName(e.target.value)}
           >
-            {sources.length === 0 && <option value="">No files uploaded</option>}
-            {sources.map(src => <option key={src} value={src} className="text-black">{src}</option>)}
+            {sheets.length === 0 && <option value="">No sheets found</option>}
+            {sheets.map((src: string) => <option key={src} value={src}>{src}</option>)}
           </select>
         </div>
+        
         <div className="flex items-center gap-3">
           <Input 
             value={search} 
             onChange={e => setSearch(e.target.value)} 
-            placeholder="Search rows..." 
-            className="h-8 w-64 bg-[#0b1527]/10 border-white/20 text-white placeholder:text-white/50 focus-visible:ring-white/30" 
+            placeholder="Search all columns..." 
+            className="h-10 w-64 bg-[#0f172a] border-[#1e293b] text-white placeholder:text-slate-500 focus-visible:ring-[#38bdf8] shadow-inner" 
           />
-          <Button size="sm" variant="outline" className="h-8 bg-[#0b1527]/10 text-white border-white/20 hover:bg-[#0b1527]/20 hover:text-white" onClick={() => addMutation.mutate({ source: sourceType || "Reference", routerName: "New Router" })}>
-            <Plus size={16} className="mr-1" /> Add Row
-          </Button>
         </div>
       </div>
 
-      <div className="flex-1 bg-[#0b1527] border border-slate-300 shadow-sm overflow-hidden flex flex-col">
-        <div className="bg-[#f3f3f3] border-b border-slate-300 px-3 py-1.5 flex gap-1 flex-shrink-0">
-           <div className="text-xs font-mono text-slate-400 bg-[#0b1527] border border-slate-300 px-2 py-0.5 shadow-inner">
-             {displayRecords.length} rows
-           </div>
-           <div className="text-xs font-mono text-slate-400 px-2 py-0.5">
-             Autosave is ON
+      <div className="relative flex-1 bg-[#0b1527] border border-[#1e293b] rounded-xl shadow-[0_16px_40px_rgba(0,0,0,0.2)] overflow-hidden flex flex-col z-10">
+        <div className="bg-[#061124] border-b border-[#1e293b] px-4 py-2.5 flex items-center justify-between flex-shrink-0">
+           <div className="flex gap-3 items-center">
+             <div className="text-xs font-semibold uppercase tracking-wider text-[#38bdf8] bg-[#0f172a] border border-[#38bdf8]/20 px-3 py-1 rounded-md shadow-inner flex items-center gap-2">
+               <LayoutGrid size={14} /> {displayRecords.length} Rows
+             </div>
+             <div className="text-xs font-medium text-slate-400 px-2 py-0.5">
+               Autosave is <span className="text-[#22c7a7] font-bold">ON</span>
+             </div>
            </div>
         </div>
 
-        <div className="flex-1 overflow-auto bg-slate-50 relative">
-          <table className="w-full border-collapse text-sm font-sans whitespace-nowrap bg-[#0b1527]">
-            <thead className="sticky top-0 z-10 bg-[#f3f3f3] shadow-sm">
+        <div className="flex-1 overflow-auto bg-[#0b1527] custom-scrollbar" style={{ scrollbarColor: '#1e293b #0b1527' }}>
+          <table className="w-full border-collapse text-sm whitespace-nowrap bg-[#0b1527]">
+            <thead className="sticky top-0 z-20 bg-[#061124] shadow-md">
               <tr>
-                <th className="border border-slate-300 px-3 py-1.5 font-normal text-slate-300 w-12 text-center bg-[#e6e6e6]">#</th>
-                <th className="border border-slate-300 px-3 py-1.5 font-normal text-slate-300 text-left min-w-[200px]">Router Name</th>
-                <th className="border border-slate-300 px-3 py-1.5 font-normal text-slate-300 text-left min-w-[120px]">Site ID</th>
-                <th className="border border-slate-300 px-3 py-1.5 font-normal text-slate-300 text-left min-w-[150px]">Country</th>
-                <th className="border border-slate-300 px-3 py-1.5 font-normal text-slate-300 text-left min-w-[150px]">City</th>
-                <th className="border border-slate-300 px-3 py-1.5 font-normal text-slate-300 text-left min-w-[250px]">Location</th>
-                <th className="border border-slate-300 px-3 py-1.5 font-normal text-slate-300 text-left min-w-[200px]">Subnet IP</th>
-                <th className="border border-slate-300 px-3 py-1.5 font-normal text-slate-300 text-left min-w-[150px]">Circuit Type</th>
-                <th className="border border-slate-300 px-3 py-1.5 font-normal text-slate-300 w-12 text-center bg-[#e6e6e6]">Actions</th>
+                <th className="border-b border-r border-[#1e293b] px-4 py-3 font-semibold text-slate-400 w-16 text-center tracking-wide uppercase text-[11px]">#</th>
+                {columns.map(col => (
+                  <th key={col} className="border-b border-r border-[#1e293b] px-4 py-3 font-semibold text-[#e2e8f0] text-left min-w-[200px] tracking-wide text-[11px] uppercase">{col}</th>
+                ))}
+                <th className="border-b border-[#1e293b] px-4 py-3 font-semibold text-slate-400 w-20 text-center tracking-wide uppercase text-[11px]">Action</th>
               </tr>
             </thead>
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={8} className="p-8 text-center text-slate-400">Loading data...</td>
+                  <td colSpan={columns.length + 2} className="p-12 text-center">
+                    <div className="inline-block animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-[#38bdf8]"></div>
+                    <div className="mt-3 text-slate-400 text-sm font-medium">Loading deep data matrices...</div>
+                  </td>
                 </tr>
               ) : displayRecords.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="p-8 text-center text-slate-400">No records found.</td>
+                  <td colSpan={columns.length + 2} className="p-12 text-center text-slate-400 text-sm font-medium">
+                    No data vectors found for the current query.
+                  </td>
                 </tr>
               ) : (
                 displayRecords.map((row: any, index: number) => (
-                  <tr key={row.id} className="hover:bg-[#f5f9f6] focus-within:bg-[#eaf5ef] transition-colors group">
-                    <td className="border border-slate-200 px-2 text-center text-slate-400 bg-[#f9f9f9] group-focus-within:bg-[#e0e0e0]">{index + 1}</td>
-                    <td className="border border-slate-200 p-0 relative"><input type="text" defaultValue={row.routerName || ""} onBlur={(e) => handleCellChange(row.id, "routerName", e.target.value, row.routerName || "")} className="w-full h-8 px-2 outline-none border-2 border-transparent focus:border-[#22c7a7] bg-transparent" /></td>
-                    <td className="border border-slate-200 p-0 relative"><input type="text" defaultValue={row.siteId || ""} onBlur={(e) => handleCellChange(row.id, "siteId", e.target.value, row.siteId || "")} className="w-full h-8 px-2 outline-none border-2 border-transparent focus:border-[#22c7a7] bg-transparent" /></td>
-                    <td className="border border-slate-200 p-0 relative"><input type="text" defaultValue={row.country || ""} onBlur={(e) => handleCellChange(row.id, "country", e.target.value, row.country || "")} className="w-full h-8 px-2 outline-none border-2 border-transparent focus:border-[#22c7a7] bg-transparent" /></td>
-                    <td className="border border-slate-200 p-0 relative"><input type="text" defaultValue={row.city || ""} onBlur={(e) => handleCellChange(row.id, "city", e.target.value, row.city || "")} className="w-full h-8 px-2 outline-none border-2 border-transparent focus:border-[#22c7a7] bg-transparent" /></td>
-                    <td className="border border-slate-200 p-0 relative"><input type="text" defaultValue={row.location || ""} onBlur={(e) => handleCellChange(row.id, "location", e.target.value, row.location || "")} className="w-full h-8 px-2 outline-none border-2 border-transparent focus:border-[#22c7a7] bg-transparent" /></td>
-                    <td className="border border-slate-200 p-0 relative"><input type="text" defaultValue={row.subnetIp || ""} onBlur={(e) => handleCellChange(row.id, "subnetIp", e.target.value, row.subnetIp || "")} className="w-full h-8 px-2 outline-none border-2 border-transparent focus:border-[#22c7a7] bg-transparent" /></td>
-                    <td className="border border-slate-200 p-0 relative"><input type="text" defaultValue={row.circuitType || ""} onBlur={(e) => handleCellChange(row.id, "circuitType", e.target.value, row.circuitType || "")} className="w-full h-8 px-2 outline-none border-2 border-transparent focus:border-[#22c7a7] bg-transparent" /></td>
-                    <td className="border border-slate-200 p-0 text-center bg-[#f9f9f9] group-focus-within:bg-[#e0e0e0]">
-                      <button type="button" onClick={() => { if(confirm("Delete this row?")) deleteMutation.mutate({ id: row.id }) }} className="text-red-500 hover:text-red-700 mx-auto block p-1">
-                        <Trash2 size={15} />
+                  <tr key={row.id} className="hover:bg-[#0f172a]/60 focus-within:bg-[#0f172a] transition-colors group">
+                    <td className="border-b border-r border-[#1e293b] px-3 text-center text-slate-500 bg-[#061124] group-focus-within:bg-[#0b1527] font-mono text-xs">
+                      {row.rowIndex || index + 1}
+                    </td>
+                    {columns.map(col => {
+                      const val = (row.fullData && typeof row.fullData === 'object') ? (row.fullData[col] || "") : "";
+                      return (
+                        <td key={col} className="border-b border-r border-[#1e293b] p-0 relative h-10">
+                          <input 
+                            type="text" 
+                            defaultValue={String(val)} 
+                            onBlur={(e) => handleCellChange(row.id, col, e.target.value, row)} 
+                            className="w-full h-full px-4 outline-none border-2 border-transparent focus:border-[#38bdf8] focus:bg-[#061124] focus:shadow-[inset_0_0_10px_rgba(56,189,248,0.1)] bg-transparent text-[#e2e8f0] placeholder:text-slate-600 transition-all font-medium text-[13px]" 
+                          />
+                        </td>
+                      );
+                    })}
+                    <td className="border-b border-[#1e293b] p-0 text-center bg-[#061124] group-focus-within:bg-[#0b1527]">
+                      <button 
+                        type="button" 
+                        onClick={() => { if(confirm("Permanently delete this row from the database?")) deleteMutation.mutate({ id: row.id }) }} 
+                        className="text-slate-500 hover:text-red-400 hover:bg-red-950/30 transition-colors mx-auto p-2 rounded-lg"
+                        title="Delete Record"
+                      >
+                        <Trash2 size={16} />
                       </button>
                     </td>
                   </tr>

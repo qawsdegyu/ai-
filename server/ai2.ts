@@ -449,9 +449,43 @@ export async function answerInventoryQuestion({ question, language, fileId, curr
                 });
              }
              debugInfo.files_processed.push(fileDebug);
-         }
+          }
       }
       
+      // NEW IMCAN SQL DATABASE SEARCH
+      try {
+        const { imcanReferenceData, imcanEucData } = await import("../drizzle/schema");
+        const { ilike, or, sql: dsql } = await import("drizzle-orm");
+        
+        const sqlSearchTerms = question.toLowerCase().split(" ").filter(w => w.length > 2);
+        if (sqlSearchTerms.length > 0) {
+          const refConditions = sqlSearchTerms.map(term => or(
+            ilike(imcanReferenceData.itemName, `%${term}%`),
+            ilike(imcanReferenceData.category, `%${term}%`),
+            dsql`CAST(${imcanReferenceData.fullData} AS TEXT) ILIKE ${'%' + term + '%'}`
+          ));
+          
+          const refResults = await db.select().from(imcanReferenceData).where(or(...refConditions)).limit(20);
+          if (refResults.length > 0) {
+            rawFilesContext.push({
+              fileName: "IMCAN-Reference-Sheet---2024.xlsm (SQL DB)",
+              content: refResults.map(r => `[Sheet: ${r.sheetName}] [Row: ${r.rowIndex}] Name: ${r.itemName} | Category: ${r.category} | Details: ${JSON.stringify(r.fullData)}`).join("\n\n")
+            });
+          }
+
+          const eucConditions = sqlSearchTerms.map(term => ilike(imcanEucData.contentChunk, `%${term}%`));
+          const eucResults = await db.select().from(imcanEucData).where(or(...eucConditions)).limit(10);
+          if (eucResults.length > 0) {
+            rawFilesContext.push({
+              fileName: "IMCAN EUC Sheet 2024.docx (SQL DB)",
+              content: eucResults.map(r => `[Document Chunk]\n${r.contentChunk}`).join("\n\n---\n\n")
+            });
+          }
+        }
+      } catch (e) {
+        console.error("Error querying new IMCAN SQL tables:", e);
+      }
+
   } catch (err: any) {
      console.error("Query Error:", err);
      const debugStr = JSON.stringify({

@@ -124,6 +124,38 @@ export async function createApp() {
     }
   });
 
+  app.get("/api/ai-images/:id", async (req, res) => {
+    try {
+      const { getDb } = await import("../db");
+      const { imcanEucImages } = await import("../../drizzle/schema");
+      const { eq } = await import("drizzle-orm");
+
+      const db = await getDb();
+      if (!db) return res.status(500).send("No database connection");
+
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) return res.status(400).send("Invalid ID");
+
+      const imageRecord = await db.select().from(imcanEucImages).where(eq(imcanEucImages.id, id)).limit(1);
+
+      if (imageRecord.length === 0) {
+        return res.status(404).send("Image not found");
+      }
+
+      const img = imageRecord[0];
+      if (img.base64Data && img.contentType) {
+        const buffer = Buffer.from(img.base64Data, 'base64');
+        res.setHeader('Content-Type', img.contentType);
+        res.send(buffer);
+      } else {
+        res.status(404).send("Invalid image data");
+      }
+    } catch (e) {
+      console.error("Error serving AI image:", e);
+      res.status(500).send("Internal Server Error");
+    }
+  });
+
   // tRPC API
   app.use(
     "/api/trpc",

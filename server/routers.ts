@@ -448,6 +448,50 @@ export const appRouter = router({
       if (!success) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Failed to delete record" });
       return { success: true };
     }),
+    getReferenceSheets: protectedProcedure.query(async () => {
+      const { getDb } = await import("./db");
+      const { imcanReferenceData } = await import("../drizzle/schema");
+      const { sql } = await import("drizzle-orm");
+      const db = await getDb();
+      if (!db) return [];
+      const res = await db.execute(sql`SELECT DISTINCT sheet_name FROM imcan_reference_data WHERE sheet_name IS NOT NULL ORDER BY sheet_name`);
+      return res.map(r => r.sheet_name as string);
+    }),
+    getReferenceData: protectedProcedure.input(z.object({ sheetName: z.string().optional() }).optional()).query(async ({ input }) => {
+      const { getDb } = await import("./db");
+      const { imcanReferenceData } = await import("../drizzle/schema");
+      const { eq } = await import("drizzle-orm");
+      const db = await getDb();
+      if (!db) return [];
+      if (input?.sheetName) {
+         return db.select().from(imcanReferenceData).where(eq(imcanReferenceData.sheetName, input.sheetName)).limit(3000);
+      }
+      return db.select().from(imcanReferenceData).limit(3000);
+    }),
+    updateReferenceData: adminProcedure.input(z.object({ id: z.number(), fullData: z.any() })).mutation(async ({ input }) => {
+      const { getDb } = await import("./db");
+      const { imcanReferenceData } = await import("../drizzle/schema");
+      const { eq } = await import("drizzle-orm");
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+      
+      const itemName = input.fullData?.Name || input.fullData?.Item || input.fullData?.Device || input.fullData?.['اسم'] || input.fullData?.Title || 'Unknown';
+      const category = input.fullData?.Category || input.fullData?.Issue || input.fullData?.Network || input.fullData?.Problem || input.fullData?.Type || 'General';
+
+      await db.update(imcanReferenceData)
+        .set({ fullData: input.fullData, itemName: String(itemName), category: String(category) })
+        .where(eq(imcanReferenceData.id, input.id));
+      return { success: true };
+    }),
+    deleteReferenceData: adminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+      const { getDb } = await import("./db");
+      const { imcanReferenceData } = await import("../drizzle/schema");
+      const { eq } = await import("drizzle-orm");
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+      await db.delete(imcanReferenceData).where(eq(imcanReferenceData.id, input.id));
+      return { success: true };
+    }),
   }),
   report: router({ migration: protectedProcedure.input(z.object({ language: z.enum(["ar", "en"]).default("en"), from: z.string().datetime().optional(), to: z.string().datetime().optional() })).query(({ input }) => getMigrationReport(input.language, { from: input.from ? new Date(input.from) : undefined, to: input.to ? new Date(input.to) : undefined })) }),
   audit: router({ list: adminProcedure.input(z.object({ userName: z.string().optional(), action: z.string().optional(), limit: z.number().int().positive().max(500).optional() }).optional()).query(({ input }) => listAuditLogs(input ?? {})) }),
