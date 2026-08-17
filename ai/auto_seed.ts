@@ -48,7 +48,21 @@ async function main() {
     const workbook = xlsx.readFile('./ai/IMCAN-Reference-Sheet---2024.xlsm');
     for (const sheetName of workbook.SheetNames) {
         const sheet = workbook.Sheets[sheetName];
-        const rows = xlsx.utils.sheet_to_json(sheet, { defval: null });
+        
+        // Find the best header row
+        const headerRows = xlsx.utils.sheet_to_json<unknown[]>(sheet, { defval: "", header: 1 });
+        let headerRowIndex = 0;
+        let maxMatch = 0;
+
+        for (let i = 0; i < Math.min(20, headerRows.length); i++) {
+            const currentHeaders = (headerRows[i] ?? []).map((value: unknown) => String(value).trim()).filter(Boolean);
+            if (currentHeaders.length > maxMatch) {
+                maxMatch = currentHeaders.length;
+                headerRowIndex = i;
+            }
+        }
+
+        const rows = xlsx.utils.sheet_to_json(sheet, { defval: null, range: headerRowIndex });
         if (rows.length === 0) continue;
         console.log(`   -> Uploading Excel sheet: ${sheetName} (${rows.length} rows)`);
         
