@@ -408,14 +408,64 @@ imcanRouter.post("/search", async (req, res) => {
 });
 
 /* ─────────────────────────────────────────────
+   HELPERS for /chat
+   ───────────────────────────────────────────── */
+
+/** Reject Arabic fallback messages — replace with English equivalent. */
+function sanitiseResponseMessage(msg: string): string {
+  if (/[\u0600-\u06FF]/.test(msg))
+    return "I could not find a matching record in the available IMCAN sources.";
+  return msg;
+}
+
+/** Enforce English on every /chat response. */
+function buildUserResponse(payload: Record<string, any>): Record<string, any> {
+  return { ...payload, language: "en", message: sanitiseResponseMessage(String(payload.message ?? "")) };
+}
+
+/** Extract a searchable site/router identifier from free-form text, or null. */
+function extractTargetIdentifier(question: string): string | null {
+  // Versa router (VAPAMM001, VAPLON002 …)
+  const m1 = question.match(/\b(VAP[A-Z0-9_-]{3,})\b/i);
+  if (m1) return m1[1].toUpperCase();
+  // Airport IATA code (3 uppercase letters)
+  const m2 = question.match(/\b([A-Z]{3})\b/);
+  if (m2) return m2[1];
+  // Generic site-ID: 5+ alphanum chars that contain a digit
+  for (const tok of question.split(/\s+/)) {
+    if (/^[A-Z0-9_-]{5,}$/i.test(tok) && /[0-9]/.test(tok)) return tok.toUpperCase();
+  }
+  // Geo keywords
+  const m3 = question.match(
+    /\b(jordan|amman|canada|montreal|london|paris|cairo|dubai|kuwait|doha|riyadh|bahrain|abu dhabi|istanbul|beirut|damascus|baghdad|muscat|karachi|delhi|mumbai|singapore)\b/i
+  );
+  if (m3) return m3[1];
+  return null;
+}
+
+/** True when the message is only a vague complaint with no searchable identifier. */
+function isGeneralIssueOnly(question: string): boolean {
+  if (extractTargetIdentifier(question)) return false;
+  const q = question.trim();
+  return (
+    /^i (have|got|am having|am facing) (a |an )?(router|network|internet|connectivity|vpn|link|circuit|wan|switch|issue|problem|error|fault|outage|incident)/i.test(q) ||
+    /^(there is|there's|we have|we got) (a |an )?(problem|issue|outage|fault|incident)/i.test(q) ||
+    /^(the |a )?(router|network|link|circuit|switch) (is |are )?(down|not responding|not working|unreachable|failed|offline)/i.test(q) ||
+    /^(help|i need help|can you help|please help)/i.test(q) ||
+    /^(hello|hi|hey|سلام|مرحبا|مرحباً)/i.test(q)
+  );
+}
+
+/* ─────────────────────────────────────────────
    ROUTE: /api/imcan/chat
+   State machine:
+     WAITING_FOR_TARGET → TARGET_FOUND → WAITING_FOR_ISSUE
+                       → ISSUE_SEARCH  → ANSWER_READY
    ───────────────────────────────────────────── */
 imcanRouter.post("/chat", async (req, res) => {
   try {
     const {
       question,
-      // Optional: caller can pass already-resolved site context
-      // so the chatbot skips asking again (step 3 → step 5 direct)
       resolved_record = null,
     } = req.body;
 
@@ -429,26 +479,26 @@ imcanRouter.post("/chat", async (req, res) => {
     const terms = cleanQ.split(" ").filter((w) => w.length > 1);
     const isTechnical = isTechnicalQuery(terms);
 
-    /* ── Detect whether question already contains a router/site identifier ── */
-    const hasRouterIdentifier = terms.some(
-      (t) =>
-        /^vap[a-z]{2,3}\d+$/i.test(t) || // Versa router pattern e.g. VAPAMM001
-        /^[a-z]{3}\d+$/i.test(t) ||        // site/airport codes
-        t.length >= 5                        // long-ish tokens likely an ID
-    );
+    /* ══════════════════════════════════════════════════════════════
+       STATE: WAITING_FOR_TARGET
+       If the message is a general complaint with no searchable
+       identifier, return the clarification question immediately.
+       No DB call, no LLM call.
+    ══════════════════════════════════════════════════════════════ */
+    const targetId = extractTargetIdentifier(question);
+    const generalOnly = isGeneralIssueOnly(question);
 
-    /* ── STEP 1: No identifier → ask which site ── */
-    if (!hasRouterIdentifier && !resolved_record && !isTechnical) {
-      return res.json({
-        message:
-          "Which site, airport, router, or site ID should I search for in the latest IMCAN inventory?",
-        language: "en",
-        stage: "awaiting_site",
-        found_record: false,
-        sources: [],
-        results: [],
-        attachments: [],
-      });
+    if (!targetId && !resolved_record && !isTechnical && generalOnly) {
+      return res.json(
+        buildUserResponse({
+          stage: "waiting_for_target",
+          message: "Which site, airport, router, or site ID should I search for?",
+          found_record: false,
+          sources: [],
+          results: [],
+          attachments: [],
+        })
+      );
     }
 
     /* ── STEP 2 & 4: Search sources ── */
@@ -493,25 +543,59 @@ imcanRouter.post("/chat", async (req, res) => {
       ? [...wordContext, ...excelContext]
       : [...excelContext, ...wordContext];
 
-    /* ── STEP 3: No records found ── */
+    /* ════════════════════════════════════════════════════════════
+       No records found
+    ════════════════════════════════════════════════════════════ */
     if (combinedContext.length === 0) {
-      return res.json({
-        message:
-          "I could not find a matching record in the available IMCAN sources.",
-        language: "en",
-        stage: "answer_ready",
-        found_record: false,
-        sources: [],
-        results: [],
-        attachments: [],
-      });
+      return res.json(
+        buildUserResponse({
+          stage: "answer_ready",
+          message:
+            "I could not find this site or router in the available IMCAN sources. " +
+            "Please check the router name or provide the country, city, airport, or site ID.",
+          found_record: false,
+          sources: [],
+          results: [],
+          attachments: [],
+        })
+      );
     }
 
-    /* ── STEP 4: Found record but no problem stated → ask ── */
+    /* ════════════════════════════════════════════════════════════
+       STATE: TARGET_FOUND
+       Exactly one router matched, but no issue stated yet.
+       Confirm the record and ask for the problem. NO LLM call.
+    ════════════════════════════════════════════════════════════ */
     const topResult = combinedContext[0];
+
+    // Multiple distinct routers → ask to narrow down
+    const uniqueRouters = new Set(
+      combinedContext
+        .map((r: any) => r.current_versa_router_name || r.row_data?.["Router Name"] || r.row_data?.["Host Name"])
+        .filter(Boolean)
+    );
+    if (uniqueRouters.size > 1 && !resolved_record) {
+      const sourceSummary = combinedContext.slice(0, 3).map((r: any) => ({
+        source_file: r.source_file,
+        sheet_name: r.sheet_name,
+        source_row_number: r.source_row_number,
+      }));
+      return res.json(
+        buildUserResponse({
+          stage: "waiting_for_target",
+          message:
+            "I found multiple matching records. Please provide the country, city, airport, or site ID to narrow the search.",
+          found_record: false,
+          sources: sourceSummary,
+          results: [],
+          attachments: [],
+        })
+      );
+    }
+
     const hasIssueKeywords =
-      question.split(" ").length > 3 || // more than 3 words = probably has a problem
-      /\?|problem|issue|down|fail|error|unreachable|cannot|can't|not working|slow|latency|drop|circuit|escalat|contact|resolver|firmware|printer|vcom|xml|upgrade/i.test(
+      question.split(" ").length > 3 ||
+      /\?|problem|issue|down|fail|error|unreachable|cannot|can't|not.working|slow|latency|drop|circuit|escalat|contact|resolver|firmware|printer|vcom|xml|upgrade/i.test(
         question
       );
 
@@ -522,57 +606,51 @@ imcanRouter.post("/chat", async (req, res) => {
         source_row_number: r.source_row_number,
         position: r.position,
       }));
-
-      return res.json({
-        message: `I found a matching record in **${topResult.source_file}** (${topResult.sheet_name || "N/A"}, row ${topResult.source_row_number || topResult.position}). What problem or issue would you like me to investigate?`,
-        language: "en",
-        stage: "awaiting_issue",
-        found_record: true,
-        sources,
-        results: [],
-        attachments: [],
-      });
+      return res.json(
+        buildUserResponse({
+          stage: "waiting_for_issue",
+          message: "I found the matching site and router record. What problem would you like me to investigate?",
+          found_record: true,
+          sources,
+          results: [],
+          attachments: [],
+        })
+      );
     }
 
-    /* ── STEP 5 & 6: Build AI answer from retrieved context ── */
-    // Build compact context, then estimate total tokens before calling LLM
+    /* ════════════════════════════════════════════════════════════
+       STATE: ANSWER_READY — call LLM with compact context
+    ════════════════════════════════════════════════════════════ */
     const intent = detectIntent(question);
     const compactContext = combinedContext.slice(0, MAX_RESULTS).map((r: any) => toCompactResult(r, intent));
 
-    const SYSTEM_PROMPT = `You are an English-only IMCAN Data Retrieval Assistant.
-You MUST answer using ONLY the JSON context provided. Never invent data, never use general knowledge.
-All responses must be in English, even if the question is in Arabic.
+    const SYSTEM_PROMPT = `You are an English-only IMCAN Support Data Assistant.
+All user-facing messages must be written in English. Never answer in Arabic, even when the user writes in Arabic.
+Use only verified data from the retrieved database context. Never invent data, never use general knowledge.
 
 STRICT RULES:
 1. Never display old/legacy router names unless explicitly asked.
-2. Never show boolean values (true/false). Convert to Yes/No if relevant, or omit.
+2. Never show boolean values (true/false). Convert to Yes/No if relevant, or omit entirely.
 3. Never show null, undefined, empty objects, or raw JSON to users.
 4. Never combine fields from different rows into one answer.
 5. Every factual answer must cite: Source File, Sheet Name, and Original Row Number (or Document Position).
-6. If the context does not contain the answer, respond: "I could not find a matching record in the available IMCAN sources."
+6. If the context does not contain the answer, respond exactly: "I could not find a matching record in the available IMCAN sources."
 7. If partial match only: "I found a partial match, but the available data is not sufficient to confirm the correct record."
+8. ALWAYS respond in English only, regardless of the language of the user's question.
 
-RESPONSE FORMAT (bullet points, English):
-- Current Versa Router Name: [from row_data, never append old name]
+RESPONSE FORMAT (English bullet points — omit any field that is empty, null, or false):
+- Issue:
+- Current Versa Router Name:
+- Site:
 - Country:
 - City:
-- Site ID:
-- Subnet:
-- Circuit:
-- Status:
-- Contact Details:
-- Location:
-- Operational Hours:
-- Issue Finding: [from context only]
-- Action / Procedure: [from context only]
-- Contact / Resolver Group: [from context only]
-- Source File: [exact file name]
-- Sheet: [exact sheet name]
-- Original Row Number: [number]
-- Related Image: [url if available, else omit]
-- Confidence: [0.0 – 1.0]
-
-Omit any bullet where the data is missing, empty, boolean false, null, or undefined.
+- Finding:
+- Relevant Data:
+- Contact or Resolver:
+- Source File:
+- Sheet:
+- Original Row Number:
+- Related Image:
 
 Return a JSON object with this schema ONLY:
 {
@@ -598,16 +676,17 @@ Return a JSON object with this schema ONLY:
 
     if (totalEstimatedTokens > CONTEXT_HARD_LIMIT_TOKENS) {
       console.warn(`[IMCAN /chat] BLOCKED — payload too large (${totalEstimatedTokens} tokens)`);
-      return res.json({
-        message: TOO_LARGE_CONTEXT_MESSAGE,
-        language: "en",
-        stage: "needs_clarification",
-        found_record: false,
-        sources: [],
-        results: [],
-        attachments: [],
-        context_token_estimate: totalEstimatedTokens,
-      });
+      return res.json(
+        buildUserResponse({
+          stage: "needs_clarification",
+          message: TOO_LARGE_CONTEXT_MESSAGE,
+          found_record: false,
+          sources: [],
+          results: [],
+          attachments: [],
+          context_token_estimate: totalEstimatedTokens,
+        })
+      );
     }
 
     const llmResponse = await invokeLLM({
@@ -639,7 +718,8 @@ Return a JSON object with this schema ONLY:
       } catch (_) { /* keep default */ }
     }
 
-    return res.json(parsed);
+    // Enforce English on every LLM response before sending to client
+    return res.json(buildUserResponse(parsed));
   } catch (e: any) {
     console.error("imcan/chat error", e);
     return res.status(500).json({ error: e.message });
