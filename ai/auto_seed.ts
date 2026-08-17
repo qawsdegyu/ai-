@@ -49,20 +49,8 @@ async function main() {
     for (const sheetName of workbook.SheetNames) {
         const sheet = workbook.Sheets[sheetName];
         
-        // Find the best header row
-        const headerRows = xlsx.utils.sheet_to_json<unknown[]>(sheet, { defval: "", header: 1 });
-        let headerRowIndex = 0;
-        let maxMatch = 0;
-
-        for (let i = 0; i < Math.min(20, headerRows.length); i++) {
-            const currentHeaders = (headerRows[i] ?? []).map((value: unknown) => String(value).trim()).filter(Boolean);
-            if (currentHeaders.length > maxMatch) {
-                maxMatch = currentHeaders.length;
-                headerRowIndex = i;
-            }
-        }
-
-        const rows = xlsx.utils.sheet_to_json(sheet, { defval: null, range: headerRowIndex });
+        // Parse the sheet exactly as it appears in Excel, keeping every column (A, B, C...) and row.
+        const rows = xlsx.utils.sheet_to_json(sheet, { defval: "", header: "A", blankrows: false });
         if (rows.length === 0) continue;
         console.log(`   -> Uploading Excel sheet: ${sheetName} (${rows.length} rows)`);
         

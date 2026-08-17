@@ -12,7 +12,7 @@ export default function DataEditor() {
   const [searchInput, setSearchInput] = useState("");
   const [sheetName, setSheetName] = useState<string>("");
   const [page, setPage] = useState(1);
-  const limit = 50;
+  const limit = 25; // Reduced from 50 to 25 to fix UI hanging/freezing during re-renders
 
   const { data: sheets = [] } = trpc.inventory.getReferenceSheets.useQuery();
   
@@ -59,7 +59,8 @@ export default function DataEditor() {
         Object.keys(r.fullData).forEach(k => keys.add(k));
       }
     });
-    return Array.from(keys);
+    // Sort columns exactly like Excel: A, B.. Z, AA, AB...
+    return Array.from(keys).sort((a, b) => a.length - b.length || a.localeCompare(b));
   }, [records]);
 
   const handleCellChange = async (id: number, field: string, newValue: string, record: any) => {
@@ -180,6 +181,7 @@ export default function DataEditor() {
                       return (
                         <td key={col} className="border-b border-r border-[#1e293b] p-0 relative h-10">
                           <input 
+                            key={`${row.id}-${col}`}
                             type="text" 
                             defaultValue={String(val)} 
                             onBlur={(e) => handleCellChange(row.id, col, e.target.value, row)} 
