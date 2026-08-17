@@ -2,13 +2,17 @@ import { useState, useMemo, useEffect } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import { Input } from "@/components/ui/input";
-import { Database, LayoutGrid, Trash2 } from "lucide-react";
+import { Database, LayoutGrid, Trash2, ChevronLeft, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
+import { Button } from "./ui/button";
 
 export default function DataEditor() {
   const { user } = useAuth();
   const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
   const [sheetName, setSheetName] = useState<string>("");
+  const [page, setPage] = useState(1);
+  const limit = 50;
 
   const { data: sheets = [] } = trpc.inventory.getReferenceSheets.useQuery();
   
@@ -18,10 +22,23 @@ export default function DataEditor() {
     }
   }, [sheets, sheetName]);
 
-  const { data: records = [], isLoading, refetch } = trpc.inventory.getReferenceData.useQuery(
-    { sheetName: sheetName || undefined }, 
-    { enabled: !!sheetName }
+  const { data: response, isLoading, refetch, isFetching } = trpc.inventory.getReferenceData.useQuery(
+    { sheetName: sheetName || undefined, page, limit, search: search || undefined }, 
+    { enabled: !!sheetName, placeholderData: (prev) => prev }
   );
+
+  const records = response?.data || [];
+  const total = response?.total || 0;
+  const totalPages = Math.ceil(total / limit);
+
+  // Debounce search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearch(searchInput);
+      setPage(1); // Reset to page 1 on new search
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
 
   const updateMutation = trpc.inventory.updateReferenceData.useMutation({
     onSuccess: () => refetch(),
@@ -33,7 +50,7 @@ export default function DataEditor() {
     onError: (err) => toast.error(`Failed to delete: ${err.message}`)
   });
 
-  // Calculate dynamic columns based on fullData keys
+  // Calculate dynamic columns based on fullData keys of current page
   const columns = useMemo(() => {
     if (!records.length) return [];
     const keys = new Set<string>();
@@ -44,20 +61,6 @@ export default function DataEditor() {
     });
     return Array.from(keys);
   }, [records]);
-
-  // Filter based on search
-  const displayRecords = useMemo(() => {
-    if (!search.trim()) return records;
-    const term = search.toLowerCase();
-    return records.filter(r => {
-      if (r.itemName?.toLowerCase().includes(term)) return true;
-      if (r.category?.toLowerCase().includes(term)) return true;
-      if (r.fullData && typeof r.fullData === 'object') {
-        return Object.values(r.fullData).some(v => String(v).toLowerCase().includes(term));
-      }
-      return false;
-    });
-  }, [records, search]);
 
   const handleCellChange = async (id: number, field: string, newValue: string, record: any) => {
     const fullData = { ...(record.fullData || {}) };
@@ -88,7 +91,7 @@ export default function DataEditor() {
           <select 
             className="bg-[#0f172a] border border-[#1e293b] text-[#e2e8f0] rounded-lg px-4 py-2 outline-none focus:ring-1 focus:ring-[#38bdf8] text-sm font-medium cursor-pointer shadow-inner appearance-none pr-8 relative min-w-[200px]"
             value={sheetName}
-            onChange={e => setSheetName(e.target.value)}
+            onChange={e => { setSheetName(e.target.value); setPage(1); }}
           >
             {sheets.length === 0 && <option value="">No sheets found</option>}
             {sheets.map((src: string) => <option key={src} value={src}>{src}</option>)}
@@ -97,9 +100,9 @@ export default function DataEditor() {
         
         <div className="flex items-center gap-3">
           <Input 
-            value={search} 
-            onChange={e => setSearch(e.target.value)} 
-            placeholder="Search all columns..." 
+            value={searchInput} 
+            onChange={e => setSearchInput(e.target.value)} 
+            placeholder="Search in database..." 
             className="h-10 w-64 bg-[#0f172a] border-[#1e293b] text-white placeholder:text-slate-500 focus-visible:ring-[#38bdf8] shadow-inner" 
           />
         </div>
@@ -109,11 +112,35 @@ export default function DataEditor() {
         <div className="bg-[#061124] border-b border-[#1e293b] px-4 py-2.5 flex items-center justify-between flex-shrink-0">
            <div className="flex gap-3 items-center">
              <div className="text-xs font-semibold uppercase tracking-wider text-[#38bdf8] bg-[#0f172a] border border-[#38bdf8]/20 px-3 py-1 rounded-md shadow-inner flex items-center gap-2">
-               <LayoutGrid size={14} /> {displayRecords.length} Rows
+               <LayoutGrid size={14} /> Total Rows: {total}
              </div>
              <div className="text-xs font-medium text-slate-400 px-2 py-0.5">
                Autosave is <span className="text-[#22c7a7] font-bold">ON</span>
              </div>
+             {isFetching && <div className="text-xs text-[#38bdf8] animate-pulse">Fetching...</div>}
+           </div>
+
+           {/* Pagination Controls */}
+           <div className="flex items-center gap-2 text-sm text-slate-400">
+              <span className="mr-2 text-xs">Page {page} of {totalPages || 1}</span>
+              <Button 
+                variant="outline" 
+                size="icon" 
+                className="h-7 w-7 bg-[#0f172a] border-[#1e293b] hover:bg-[#1e293b] hover:text-white"
+                onClick={() => setPage(p => Math.max(1, p - 1))}
+                disabled={page === 1 || isLoading}
+              >
+                <ChevronLeft size={14} />
+              </Button>
+              <Button 
+                variant="outline" 
+                size="icon" 
+                className="h-7 w-7 bg-[#0f172a] border-[#1e293b] hover:bg-[#1e293b] hover:text-white"
+                onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages || isLoading}
+              >
+                <ChevronRight size={14} />
+              </Button>
            </div>
         </div>
 
@@ -136,17 +163,17 @@ export default function DataEditor() {
                     <div className="mt-3 text-slate-400 text-sm font-medium">Loading deep data matrices...</div>
                   </td>
                 </tr>
-              ) : displayRecords.length === 0 ? (
+              ) : records.length === 0 ? (
                 <tr>
                   <td colSpan={columns.length + 2} className="p-12 text-center text-slate-400 text-sm font-medium">
                     No data vectors found for the current query.
                   </td>
                 </tr>
               ) : (
-                displayRecords.map((row: any, index: number) => (
+                records.map((row: any, index: number) => (
                   <tr key={row.id} className="hover:bg-[#0f172a]/60 focus-within:bg-[#0f172a] transition-colors group">
                     <td className="border-b border-r border-[#1e293b] px-3 text-center text-slate-500 bg-[#061124] group-focus-within:bg-[#0b1527] font-mono text-xs">
-                      {row.rowIndex || index + 1}
+                      {row.rowIndex || ((page - 1) * limit + index + 1)}
                     </td>
                     {columns.map(col => {
                       const val = (row.fullData && typeof row.fullData === 'object') ? (row.fullData[col] || "") : "";

@@ -457,16 +457,39 @@ export const appRouter = router({
       const res = await db.execute(sql`SELECT DISTINCT sheet_name FROM imcan_reference_data WHERE sheet_name IS NOT NULL ORDER BY sheet_name`);
       return res.map(r => r.sheet_name as string);
     }),
-    getReferenceData: protectedProcedure.input(z.object({ sheetName: z.string().optional() }).optional()).query(async ({ input }) => {
+    getReferenceData: protectedProcedure.input(z.object({ 
+      sheetName: z.string().optional(),
+      page: z.number().optional().default(1),
+      limit: z.number().optional().default(50),
+      search: z.string().optional()
+    }).optional()).query(async ({ input }) => {
       const { getDb } = await import("./db");
       const { imcanReferenceData } = await import("../drizzle/schema");
-      const { eq } = await import("drizzle-orm");
+      const { eq, ilike, sql, and } = await import("drizzle-orm");
       const db = await getDb();
-      if (!db) return [];
-      if (input?.sheetName) {
-         return db.select().from(imcanReferenceData).where(eq(imcanReferenceData.sheetName, input.sheetName)).limit(3000);
+      if (!db) return { data: [], total: 0, page: 1, limit: 50 };
+      
+      const page = input?.page || 1;
+      const limit = input?.limit || 50;
+      const offset = (page - 1) * limit;
+      
+      let condition = undefined;
+      if (input?.sheetName && input?.search) {
+         condition = and(
+           eq(imcanReferenceData.sheetName, input.sheetName),
+           sql`${imcanReferenceData.fullData}::text ILIKE ${'%' + input.search + '%'}`
+         );
+      } else if (input?.sheetName) {
+         condition = eq(imcanReferenceData.sheetName, input.sheetName);
+      } else if (input?.search) {
+         condition = sql`${imcanReferenceData.fullData}::text ILIKE ${'%' + input.search + '%'}`;
       }
-      return db.select().from(imcanReferenceData).limit(3000);
+
+      const [{ count }] = await db.select({ count: sql<number>`cast(count(*) as integer)` }).from(imcanReferenceData).where(condition);
+      
+      const data = await db.select().from(imcanReferenceData).where(condition).limit(limit).offset(offset).orderBy(imcanReferenceData.id);
+      
+      return { data, total: count, page, limit };
     }),
     updateReferenceData: adminProcedure.input(z.object({ id: z.number(), fullData: z.any() })).mutation(async ({ input }) => {
       const { getDb } = await import("./db");
