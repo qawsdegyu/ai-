@@ -1,304 +1,536 @@
 import { Router } from "express";
 import { getDb } from "./db";
-import { imcanRows, imcanDocumentItems, imcanDocumentAssets, imcanSources } from "../drizzle/schema";
+import {
+  imcanRows,
+  imcanDocumentItems,
+  imcanDocumentAssets,
+  imcanSources,
+} from "../drizzle/schema";
 import { eq, or, sql, ilike, inArray, and } from "drizzle-orm";
 import { invokeLLM } from "./_core/llm";
 
 export const imcanRouter = Router();
 
-const NEW_INVENTORY_HASH = '5aad8e9ef455c77a708788d43cbb4e374aefca9044e6a0a0ea2333b917bc4ae0';
+/* ─────────────────────────────────────────────
+   CONSTANTS
+   ───────────────────────────────────────────── */
+const NEW_INVENTORY_HASH =
+  "5aad8e9ef455c77a708788d43cbb4e374aefca9044e6a0a0ea2333b917bc4ae0";
 
-// /api/new-inventory/search
-imcanRouter.post("/new-inventory/search", async (req, res) => {
-  try {
-    const { query, sheet, limit = 10 } = req.body;
-    if (!query) return res.status(400).json({ error: "Missing query" });
+const WORD_KEYWORDS = [
+  "printer", "firmware", "printerSet", "printerset", "vcom",
+  "usb", "xml", "amadeus", "atb", "btp", "configure", "configuration",
+  "port", "com", "upgrade", "driver",
+];
 
-    const db = await getDb();
-    if (!db) return res.status(500).json({ error: "No DB" });
+/* ─────────────────────────────────────────────
+   HELPERS
+   ───────────────────────────────────────────── */
 
-    const cleanQuery = query.replace(/\s+/g, " ").trim().toLowerCase();
-    const sqlSearchTerms = cleanQuery.split(" ").filter((w: string) => w.length > 2);
-    
-    if (sqlSearchTerms.length === 0) return res.json({ results: [] });
-    
-    const tsQueryStr = sqlSearchTerms.join(" | ");
+/** Normalise a query string: trim, collapse spaces, lowercase. */
+function cleanText(s: string): string {
+  return s.replace(/\s+/g, " ").trim().toLowerCase();
+}
 
-    const newSource = await db.select().from(imcanSources).where(eq(imcanSources.hash, NEW_INVENTORY_HASH)).limit(1);
-    if (!newSource || newSource.length === 0) {
-       return res.json({ results: [] });
+/** Sanitise a display value — never show booleans / null / raw JSON to users. */
+function sanitiseValue(val: any): string | undefined {
+  if (val === null || val === undefined) return undefined;
+  if (typeof val === "boolean") return val ? "Yes" : "No";
+  if (typeof val === "object") return undefined; // skip nested JSON
+  const str = String(val).trim();
+  return str === "" ? undefined : str;
+}
+
+/** Extract clean display fields from a row_data JSONB object. */
+function extractRowFields(rowData: any): Record<string, string> {
+  if (!rowData || typeof rowData !== "object") return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(rowData)) {
+    const clean = sanitiseValue(v);
+    if (clean) out[k] = clean;
+  }
+  return out;
+}
+
+/** Determine if query is technical (Word doc priority). */
+function isTechnicalQuery(terms: string[]): boolean {
+  return terms.some((t) => WORD_KEYWORDS.some((kw) => t.includes(kw)));
+}
+
+/**
+ * Ranked multi-tier search in imcan_rows.
+ * Returns rows with a numeric `score` (higher = better match).
+ *
+ * Tier 1 (score 1.0) : exact full-string ILIKE match on search_text
+ * Tier 2 (score 0.85): all terms present in search_text (AND)
+ * Tier 3 (score 0.60): any term present (OR, partial ILIKE)
+ * Tier 4 (score 0.40): full-text search_vector
+ *
+ * Country / City / SiteID filter is applied on top when provided.
+ */
+async function searchExcelRows(opts: {
+  db: any;
+  query: string;
+  sheet?: string | null;
+  country?: string | null;
+  city?: string | null;
+  siteId?: string | null;
+  sourceHash?: string | null; // restrict to a specific source by hash
+  limit?: number;
+}) {
+  const {
+    db,
+    query,
+    sheet,
+    country,
+    city,
+    siteId,
+    sourceHash,
+    limit = 10,
+  } = opts;
+
+  // --- resolve source ID restriction ---
+  let restrictedSourceId: number | null = null;
+  if (sourceHash) {
+    const src = await db
+      .select()
+      .from(imcanSources)
+      .where(eq(imcanSources.hash, sourceHash))
+      .limit(1);
+    if (src && src.length > 0) restrictedSourceId = src[0].id;
+  }
+
+  // Build optional filters (AND-combined)
+  const andFilters: any[] = [];
+  if (restrictedSourceId !== null) {
+    andFilters.push(eq(imcanRows.sourceId, restrictedSourceId));
+  }
+  if (sheet) {
+    andFilters.push(ilike(imcanRows.sheetName, `%${sheet}%`));
+  }
+  if (country) {
+    andFilters.push(ilike(imcanRows.searchText, `%${cleanText(country)}%`));
+  }
+  if (city) {
+    andFilters.push(ilike(imcanRows.searchText, `%${cleanText(city)}%`));
+  }
+  if (siteId) {
+    andFilters.push(ilike(imcanRows.searchText, `%${cleanText(siteId)}%`));
+  }
+
+  const cleanQ = cleanText(query);
+  const terms = cleanQ.split(" ").filter((w) => w.length > 1);
+
+  // Fetch a broad candidate set (up to 200) then score in JS
+  const orConditions = terms.map((t) =>
+    ilike(imcanRows.searchText, `%${t}%`)
+  );
+  const tsQ = terms.join(" | ");
+  const vectorCondition = sql`search_vector @@ to_tsquery('simple', ${tsQ})`;
+
+  const baseTextCondition =
+    orConditions.length > 0
+      ? or(...orConditions, vectorCondition)
+      : vectorCondition;
+
+  const finalWhere =
+    andFilters.length > 0
+      ? and(...andFilters, baseTextCondition)
+      : baseTextCondition;
+
+  const rawRows = await db
+    .select({ row: imcanRows, source: imcanSources })
+    .from(imcanRows)
+    .leftJoin(imcanSources, eq(imcanRows.sourceId, imcanSources.id))
+    .where(finalWhere)
+    .limit(200);
+
+  // Score each row
+  const scored = rawRows.map(({ row: r, source: s }: any) => {
+    const st = (r.searchText || "").toLowerCase();
+    let score = 0;
+
+    // Tier 1 — exact full string
+    if (st === cleanQ || st.includes(`\t${cleanQ}\t`)) {
+      score = 1.0;
+    }
+    // Tier 2 — all terms present (AND)
+    else if (terms.length > 0 && terms.every((t) => st.includes(t))) {
+      score = 0.85;
+    }
+    // Tier 3 — any term present (OR)
+    else if (terms.some((t) => st.includes(t))) {
+      score = 0.6;
+    }
+    // Tier 4 — vector match only
+    else {
+      score = 0.4;
     }
 
-    const excelSearchVectorQuery = sql`search_vector @@ to_tsquery('arabic', ${tsQueryStr})`;
-    const excelLikeConditions = sqlSearchTerms.map((term: string) => ilike(imcanRows.searchText, `%${term}%`));
-    
-    const baseCondition = or(excelSearchVectorQuery, ...excelLikeConditions);
-    const finalCondition = sheet 
-      ? and(eq(imcanRows.sourceId, newSource[0].id), ilike(imcanRows.sheetName, `%${sheet}%`), baseCondition)
-      : and(eq(imcanRows.sourceId, newSource[0].id), baseCondition);
+    // Boost if source matches the expected source
+    if (s && s.hash === NEW_INVENTORY_HASH) score += 0.05;
 
-    const rawExcel = await db.select().from(imcanRows).where(finalCondition).limit(limit);
-    
-    const results = rawExcel.map(r => ({
-      file_name: newSource[0].fileName || "NewInventory.xlsx",
-      version_label: newSource[0].version || "NewInventory",
+    return {
+      source_id: r.sourceId,
+      source_file: s ? s.fileName || "Unknown Source" : "Unknown Source",
+      version_label: s ? s.version : undefined,
       sheet_name: r.sheetName,
       source_row_number: r.sourceRowNumber,
-      row_data: r.rowData,
-      score: 1.0
-    }));
+      row_data: extractRowFields(r.rowData),
+      search_text: r.searchText,
+      score: Math.min(score, 1.0),
+    };
+  });
 
-    return res.json({ results });
+  // Sort by score desc, then sheet, then row
+  scored.sort(
+    (a: any, b: any) =>
+      b.score - a.score ||
+      (a.sheet_name || "").localeCompare(b.sheet_name || "") ||
+      (a.source_row_number || 0) - (b.source_row_number || 0)
+  );
+
+  return scored.slice(0, limit);
+}
+
+/** Search Word document items and attach related image assets. */
+async function searchWordItems(opts: {
+  db: any;
+  terms: string[];
+  limit?: number;
+}) {
+  const { db, terms, limit = 10 } = opts;
+  if (terms.length === 0) return [];
+
+  const likeConditions = terms.map((t) =>
+    ilike(imcanDocumentItems.contentText, `%${t}%`)
+  );
+  const tsQ = terms.join(" | ");
+  const vectorCond = sql`search_vector @@ to_tsquery('simple', ${tsQ})`;
+
+  const rawWord = await db
+    .select()
+    .from(imcanDocumentItems)
+    .where(or(...likeConditions, vectorCond))
+    .limit(limit);
+
+  // Attach assets
+  const docIds = Array.from(
+    new Set(rawWord.map((r: any) => r.documentId).filter(Boolean))
+  ) as number[];
+
+  const assetsMap = new Map<string, any[]>();
+  if (docIds.length > 0) {
+    const assets = await db
+      .select()
+      .from(imcanDocumentAssets)
+      .where(inArray(imcanDocumentAssets.documentId, docIds));
+
+    for (const a of assets) {
+      const positions = (a.relatedItemPositions as number[]) || [];
+      for (const pos of positions) {
+        const key = `${a.documentId}-${pos}`;
+        if (!assetsMap.has(key)) assetsMap.set(key, []);
+        assetsMap.get(key)!.push({
+          asset_name: a.assetName,
+          asset_kind: a.assetKind,
+          mime_type: a.mimeType,
+          cdn_url: a.cdnUrl,
+        });
+      }
+    }
+  }
+
+  return rawWord.map((r: any) => ({
+    type: "word_document",
+    source_file: "IMCANEUCSheet2024.docx",
+    position: r.position,
+    content_text: r.contentText,
+    assets: (assetsMap.get(`${r.documentId}-${r.position}`) || []).slice(0, 3),
+    score: 0.9,
+  }));
+}
+
+/* ─────────────────────────────────────────────
+   ROUTE: /api/new-inventory/search (dedicated)
+   ───────────────────────────────────────────── */
+imcanRouter.post("/new-inventory/search", async (req, res) => {
+  try {
+    const { query, sheet, country, city, site_id, limit = 10 } = req.body;
+    if (!query || String(query).trim() === "")
+      return res.status(400).json({ error: "Missing query" });
+
+    const db = await getDb();
+    if (!db) return res.status(500).json({ error: "No DB" });
+
+    const results = await searchExcelRows({
+      db,
+      query,
+      sheet,
+      country,
+      city,
+      siteId: site_id,
+      sourceHash: NEW_INVENTORY_HASH,
+      limit,
+    });
+
+    const status =
+      results.length === 0
+        ? "not_found"
+        : results[0].score >= 0.85
+        ? "matched"
+        : "partial";
+
+    return res.json({ query, status, results });
   } catch (e: any) {
-    console.error("New Inventory Search API error", e);
+    console.error("new-inventory/search error", e);
     return res.status(500).json({ error: e.message });
   }
 });
 
-// /api/imcan/search
+/* ─────────────────────────────────────────────
+   ROUTE: /api/imcan/search (unified, all sources)
+   ───────────────────────────────────────────── */
 imcanRouter.post("/search", async (req, res) => {
   try {
-    const { query, sheet, limit = 10 } = req.body;
-    if (!query) return res.status(400).json({ error: "Missing query" });
+    const {
+      query,
+      country = null,
+      city = null,
+      site_id = null,
+      sheet = null,
+      limit = 10,
+    } = req.body;
+
+    if (!query || String(query).trim() === "")
+      return res.status(400).json({ error: "Missing query" });
 
     const db = await getDb();
     if (!db) return res.status(500).json({ error: "No DB" });
 
-    // 1. Clean query
-    const cleanQuery = query.replace(/\s+/g, " ").trim().toLowerCase();
-    const sqlSearchTerms = cleanQuery.split(" ").filter((w: string) => w.length > 2);
-    
-    // 2. Determine priority
-    const wordKeywords = ["printer", "firmware", "vcom", "xml", "configure", "amadeus"];
-    const excelKeywords = ["موقع", "router", "country", "city", "vlan", "dns", "resolver", "contact", "asset verification", "escalation"];
-    
-    let priority = "mixed";
-    if (sqlSearchTerms.some((t: string) => wordKeywords.includes(t))) priority = "word";
-    if (sqlSearchTerms.some((t: string) => excelKeywords.includes(t))) priority = "excel";
+    const cleanQ = cleanText(query);
+    const terms = cleanQ.split(" ").filter((w) => w.length > 1);
 
-    let excelResults: any[] = [];
-    let wordResults: any[] = [];
+    const isTechnical = isTechnicalQuery(terms);
 
-    if (sqlSearchTerms.length > 0) {
-      const tsQueryStr = sqlSearchTerms.join(" | ");
+    let results: any[] = [];
 
-      // --- Search Excel ---
-      const excelSearchVectorQuery = sql`search_vector @@ to_tsquery('arabic', ${tsQueryStr})`;
-      const excelLikeConditions = sqlSearchTerms.map((term: string) => ilike(imcanRows.searchText, `%${term}%`));
-      
-      const baseCondition = or(excelSearchVectorQuery, ...excelLikeConditions);
-      const excelCondition = sheet 
-         ? and(ilike(imcanRows.sheetName, `%${sheet}%`), baseCondition)
-         : baseCondition;
-         
-      const rawExcel = await db.select({
-         row: imcanRows,
-         source: imcanSources
-      })
-      .from(imcanRows)
-      .leftJoin(imcanSources, eq(imcanRows.sourceId, imcanSources.id))
-      .where(excelCondition)
-      .limit(limit);
-      
-      excelResults = rawExcel.map(({ row: r, source: s }) => ({
-        type: "excel_row",
-        source: s ? (s.fileName || "Excel Database") : "Excel Database",
-        file_name: s ? s.fileName : undefined,
-        version_label: s ? s.version : undefined,
-        sheet_name: r.sheetName,
-        position: r.sourceRowNumber,
-        text: JSON.stringify(r.rowData),
-        assets: [],
-        score: priority === "excel" ? 1.0 : 0.5
-      }));
-
-      // --- Search Word Document Items ---
-      const wordSearchVectorQuery = sql`search_vector @@ to_tsquery('arabic', ${tsQueryStr})`;
-      const wordLikeConditions = sqlSearchTerms.map((term: string) => ilike(imcanDocumentItems.contentText, `%${term}%`));
-      
-      const wordCondition = or(wordSearchVectorQuery, ...wordLikeConditions);
-      const rawWord = await db.select().from(imcanDocumentItems).where(wordCondition).limit(limit);
-
-      // Fetch assets if needed
-      const matchedDocIds = Array.from(new Set(rawWord.map(r => r.documentId).filter(Boolean)));
-      let assetsMap = new Map();
-      if (matchedDocIds.length > 0) {
-        const assets = await db.select().from(imcanDocumentAssets).where(inArray(imcanDocumentAssets.documentId, matchedDocIds as number[]));
-        assets.forEach(a => {
-           const positions = (a.relatedItemPositions as number[]) || [];
-           positions.forEach(pos => {
-              const key = `${a.documentId}-${pos}`;
-              if (!assetsMap.has(key)) assetsMap.set(key, []);
-              assetsMap.get(key).push({
-                 asset_name: a.assetName,
-                 asset_kind: a.assetKind,
-                 mime_type: a.mimeType,
-                 cdn_url: a.cdnUrl
-              });
-           });
-        });
+    if (isTechnical) {
+      // Step A: Word doc first
+      const wordResults = await searchWordItems({ db, terms, limit });
+      // Step B: also search Excel for context
+      const excelResults = await searchExcelRows({
+        db, query, sheet, country, city, siteId: site_id, limit: 5,
+      });
+      results = [...wordResults, ...excelResults].sort(
+        (a, b) => b.score - a.score
+      );
+    } else {
+      // Step A: NewInventory first
+      const newResults = await searchExcelRows({
+        db, query, sheet, country, city, siteId: site_id,
+        sourceHash: NEW_INVENTORY_HASH, limit,
+      });
+      // Step B: Old IMCAN reference (no hash restriction) as fallback
+      const oldResults = await searchExcelRows({
+        db, query, sheet, country, city, siteId: site_id, limit,
+      });
+      // Merge: prefer NewInventory, deduplicate by row number + sheet
+      const seen = new Set<string>();
+      for (const r of [...newResults, ...oldResults]) {
+        const key = `${r.source_file}|${r.sheet_name}|${r.source_row_number}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          results.push(r);
+        }
       }
-
-      wordResults = rawWord.map(r => ({
-        type: "document_item",
-        source: "IMCANEUCSheet2024.docx",
-        sheet_name: null,
-        position: r.position,
-        text: r.contentText,
-        assets: assetsMap.get(`${r.documentId}-${r.position}`) || [],
-        score: priority === "word" ? 1.0 : 0.5
-      }));
+      results = results.sort((a, b) => b.score - a.score).slice(0, limit);
     }
 
-    // 5 & 6. Sort and Limit
-    let combined = [...wordResults, ...excelResults].sort((a, b) => b.score - a.score).slice(0, limit);
+    const status =
+      results.length === 0
+        ? "not_found"
+        : results[0].score >= 0.85
+        ? "matched"
+        : "partial";
 
-    return res.json({ results: combined });
+    return res.json({ query, status, results });
   } catch (e: any) {
-    console.error("Search API error", e);
+    console.error("imcan/search error", e);
     return res.status(500).json({ error: e.message });
   }
 });
 
-// /api/imcan/chat
+/* ─────────────────────────────────────────────
+   ROUTE: /api/imcan/chat
+   ───────────────────────────────────────────── */
 imcanRouter.post("/chat", async (req, res) => {
   try {
-    const { question } = req.body;
-    if (!question) return res.status(400).json({ error: "Missing question" });
+    const {
+      question,
+      // Optional: caller can pass already-resolved site context
+      // so the chatbot skips asking again (step 3 → step 5 direct)
+      resolved_record = null,
+    } = req.body;
 
-    // Re-use search logic (could be abstracted, but keeping it inline for simplicity)
+    if (!question || String(question).trim() === "")
+      return res.status(400).json({ error: "Missing question" });
+
     const db = await getDb();
     if (!db) return res.status(500).json({ error: "No DB" });
 
-    const cleanQuery = question.replace(/\s+/g, " ").trim().toLowerCase();
-    const sqlSearchTerms = cleanQuery.split(" ").filter((w: string) => w.length > 2);
-    
-    const wordKeywords = ["printer", "firmware", "vcom", "xml", "configure", "amadeus"];
-    const excelKeywords = ["موقع", "router", "country", "city", "vlan", "dns", "resolver", "contact", "asset verification", "escalation"];
-    
-    let priority = "mixed";
-    if (sqlSearchTerms.some((t: string) => wordKeywords.includes(t))) priority = "word";
-    if (sqlSearchTerms.some((t: string) => excelKeywords.includes(t))) priority = "excel";
+    const cleanQ = cleanText(question);
+    const terms = cleanQ.split(" ").filter((w) => w.length > 1);
+    const isTechnical = isTechnicalQuery(terms);
 
-    let combinedContext: any[] = [];
-    if (sqlSearchTerms.length > 0) {
-      const tsQueryStr = sqlSearchTerms.join(" | ");
+    /* ── Detect whether question already contains a router/site identifier ── */
+    const hasRouterIdentifier = terms.some(
+      (t) =>
+        /^vap[a-z]{2,3}\d+$/i.test(t) || // Versa router pattern e.g. VAPAMM001
+        /^[a-z]{3}\d+$/i.test(t) ||        // site/airport codes
+        t.length >= 5                        // long-ish tokens likely an ID
+    );
 
-      // Search Word
-      const wordSearchVectorQuery = sql`search_vector @@ to_tsquery('arabic', ${tsQueryStr})`;
-      const wordLikeConditions = sqlSearchTerms.map((term: string) => ilike(imcanDocumentItems.contentText, `%${term}%`));
-      const rawWord = await db.select().from(imcanDocumentItems).where(or(wordSearchVectorQuery, ...wordLikeConditions)).limit(10);
-
-      const matchedDocIds = Array.from(new Set(rawWord.map(r => r.documentId).filter(Boolean)));
-      let assetsMap = new Map();
-      if (matchedDocIds.length > 0) {
-        const assets = await db.select().from(imcanDocumentAssets).where(inArray(imcanDocumentAssets.documentId, matchedDocIds as number[]));
-        assets.forEach(a => {
-           const positions = (a.relatedItemPositions as number[]) || [];
-           positions.forEach(pos => {
-              const key = `${a.documentId}-${pos}`;
-              if (!assetsMap.has(key)) assetsMap.set(key, []);
-              assetsMap.get(key).push({
-                 asset_name: a.assetName,
-                 asset_kind: a.assetKind,
-                 mime_type: a.mimeType,
-                 cdn_url: a.cdnUrl
-              });
-           });
-        });
-      }
-
-      const wordResults = rawWord.map(r => ({
-        type: "word_document",
-        file_name: "IMCANEUCSheet2024.docx",
-        position: r.position,
-        text: r.contentText,
-        assets: assetsMap.get(`${r.documentId}-${r.position}`) || [],
-        score: priority === "word" ? 1.0 : 0.5
-      }));
-
-      // Search Excel
-      const excelSearchVectorQuery = sql`search_vector @@ to_tsquery('arabic', ${tsQueryStr})`;
-      const excelLikeConditions = sqlSearchTerms.map((term: string) => ilike(imcanRows.searchText, `%${term}%`));
-      const excelCondition = or(excelSearchVectorQuery, ...excelLikeConditions);
-      
-      let rawExcel = await db.select({
-         row: imcanRows,
-         source: imcanSources
-      })
-      .from(imcanRows)
-      .leftJoin(imcanSources, eq(imcanRows.sourceId, imcanSources.id))
-      .where(excelCondition)
-      .limit(20); // fetch more to filter down
-      
-      const asksForNew = cleanQuery.includes("new") || cleanQuery.includes("latest") || cleanQuery.includes("أحدث") || cleanQuery.includes("جديد");
-      const asksForOld = cleanQuery.includes("old") || cleanQuery.includes("reference") || cleanQuery.includes("قديم") || cleanQuery.includes("سابق");
-      
-      if (asksForNew) {
-         rawExcel = rawExcel.filter(r => r.source?.hash === NEW_INVENTORY_HASH);
-      } else if (asksForOld) {
-         rawExcel = rawExcel.filter(r => r.source?.hash !== NEW_INVENTORY_HASH);
-      }
-      
-      const excelResults = rawExcel.slice(0, 10).map(({ row: r, source: s }) => ({
-        type: "excel",
-        file_name: s ? s.fileName : "Unknown Excel",
-        version_label: s ? s.version : "Unknown Version",
-        sheet_name: r.sheetName,
-        row_number: r.sourceRowNumber,
-        text: JSON.stringify(r.rowData),
-        score: priority === "excel" ? 1.0 : 0.5
-      }));
-
-      combinedContext = [...wordResults, ...excelResults].sort((a, b) => b.score - a.score).slice(0, 10);
-    }
-
-    if (combinedContext.length === 0) {
+    /* ── STEP 1: No identifier → ask which site ── */
+    if (!hasRouterIdentifier && !resolved_record && !isTechnical) {
       return res.json({
-         message: "I could not find this information in the available IMCAN sources.",
-         language: "en",
-         stage: "answer_ready",
-         found_record: false,
-         sources: [],
-         results: [],
-         attachments: []
+        message:
+          "Which site, airport, router, or site ID should I search for in the latest IMCAN inventory?",
+        language: "en",
+        stage: "awaiting_site",
+        found_record: false,
+        sources: [],
+        results: [],
+        attachments: [],
       });
     }
 
-    const systemPrompt = `You are an English-only Support Data Assistant for IMCAN.
-You must use the provided JSON context to answer. Do not use general knowledge or invent anything.
-All user-facing text must be in English ONLY. If the user asks in Arabic, translate internally and respond in English.
+    /* ── STEP 2 & 4: Search sources ── */
+    let excelContext: any[] = [];
+    let wordContext: any[] = [];
 
-WORKFLOW RULES:
-1. Identify if the user provided a site, router, airport, city, country, subnet, or circuit.
-2. If NO identifier is provided, return:
-   message: "Which site, airport, router, or inventory record should I search in the latest NewInventory file?"
-   stage: "awaiting_issue", found_record: false
-3. If an identifier IS provided but NO problem/issue is stated, return:
-   message: "I found the matching record in [Source File]. What problem would you like me to investigate?"
-   stage: "awaiting_issue", found_record: true, sources: [list of matched sources]
-4. If BOTH an identifier AND a problem are provided, return the final answer formatted strictly as English bullet points:
-   - Issue:
-   - Site / Router:
-   - Finding:
-   - Action or procedure found in the source:
-   - Contact or resolver group:
-   - Source file:
-   - Sheet or document section:
-   - Original row number or document position:
-   - Related image or attachment:
-   - Confidence:
-   Omit empty bullets. stage: "answer_ready".
-5. If the information is not present in the context, return message: "I could not find this information in the available IMCAN sources."
-6. If the search result is incomplete, return message: "I found a partial match, but the available data is not sufficient to confirm the answer."
+    // Always try NewInventory first for site/router lookup
+    const newInvResults = await searchExcelRows({
+      db,
+      query: question,
+      sourceHash: NEW_INVENTORY_HASH,
+      limit: 5,
+    });
+    excelContext.push(...newInvResults);
 
-You MUST return a JSON object matching this exact schema:
+    // If question looks like it needs historical/operational data, also search old IMCAN
+    if (!isTechnical) {
+      const oldResults = await searchExcelRows({
+        db,
+        query: question,
+        limit: 5,
+      });
+      // Add old results that aren't duplicates
+      const existing = new Set(
+        excelContext.map(
+          (r) => `${r.source_file}|${r.sheet_name}|${r.source_row_number}`
+        )
+      );
+      for (const r of oldResults) {
+        const key = `${r.source_file}|${r.sheet_name}|${r.source_row_number}`;
+        if (!existing.has(key)) excelContext.push(r);
+      }
+    }
+
+    // Search Word doc for technical queries
+    if (isTechnical) {
+      wordContext = await searchWordItems({ db, terms, limit: 5 });
+    }
+
+    // Combine — Word context for technical, Excel for everything else
+    const combinedContext = isTechnical
+      ? [...wordContext, ...excelContext]
+      : [...excelContext, ...wordContext];
+
+    /* ── STEP 3: No records found ── */
+    if (combinedContext.length === 0) {
+      return res.json({
+        message:
+          "I could not find a matching record in the available IMCAN sources.",
+        language: "en",
+        stage: "answer_ready",
+        found_record: false,
+        sources: [],
+        results: [],
+        attachments: [],
+      });
+    }
+
+    /* ── STEP 4: Found record but no problem stated → ask ── */
+    const topResult = combinedContext[0];
+    const hasIssueKeywords =
+      question.split(" ").length > 3 || // more than 3 words = probably has a problem
+      /\?|problem|issue|down|fail|error|unreachable|cannot|can't|not working|slow|latency|drop|circuit|escalat|contact|resolver|firmware|printer|vcom|xml|upgrade/i.test(
+        question
+      );
+
+    if (!hasIssueKeywords && !isTechnical && !resolved_record) {
+      const sources = combinedContext.slice(0, 3).map((r) => ({
+        source_file: r.source_file,
+        sheet_name: r.sheet_name,
+        source_row_number: r.source_row_number,
+        position: r.position,
+      }));
+
+      return res.json({
+        message: `I found a matching record in **${topResult.source_file}** (${topResult.sheet_name || "N/A"}, row ${topResult.source_row_number || topResult.position}). What problem or issue would you like me to investigate?`,
+        language: "en",
+        stage: "awaiting_issue",
+        found_record: true,
+        sources,
+        results: [],
+        attachments: [],
+      });
+    }
+
+    /* ── STEP 5 & 6: Build AI answer from retrieved context ── */
+    const SYSTEM_PROMPT = `You are an English-only IMCAN Data Retrieval Assistant.
+You MUST answer using ONLY the JSON context provided. Never invent data, never use general knowledge.
+All responses must be in English, even if the question is in Arabic.
+
+STRICT RULES:
+1. Never display old/legacy router names unless explicitly asked.
+2. Never show boolean values (true/false). Convert to Yes/No if relevant, or omit.
+3. Never show null, undefined, empty objects, or raw JSON to users.
+4. Never combine fields from different rows into one answer.
+5. Every factual answer must cite: Source File, Sheet Name, and Original Row Number (or Document Position).
+6. If the context does not contain the answer, respond: "I could not find a matching record in the available IMCAN sources."
+7. If partial match only: "I found a partial match, but the available data is not sufficient to confirm the correct record."
+
+RESPONSE FORMAT (bullet points, English):
+- Current Versa Router Name: [from row_data, never append old name]
+- Country:
+- City:
+- Site ID:
+- Subnet:
+- Circuit:
+- Status:
+- Contact Details:
+- Location:
+- Operational Hours:
+- Issue Finding: [from context only]
+- Action / Procedure: [from context only]
+- Contact / Resolver Group: [from context only]
+- Source File: [exact file name]
+- Sheet: [exact sheet name]
+- Original Row Number: [number]
+- Related Image: [url if available, else omit]
+- Confidence: [0.0 – 1.0]
+
+Omit any bullet where the data is missing, empty, boolean false, null, or undefined.
+
+Return a JSON object with this schema ONLY:
 {
-  "message": "The English response text",
+  "message": "Full English bullet-point answer",
   "language": "en",
-  "stage": "awaiting_issue" | "answer_ready",
+  "stage": "answer_ready",
   "found_record": boolean,
-  "sources": [{ "file_name": string, "sheet_name"?: string, "source_row_number"?: number, "position"?: number }],
+  "sources": [{ "source_file": string, "sheet_name"?: string, "source_row_number"?: number, "position"?: number }],
   "results": [],
   "attachments": [{ "asset_name": string, "mime_type": string, "url": string, "reason": string }]
 }`;
@@ -306,33 +538,35 @@ You MUST return a JSON object matching this exact schema:
     const llmResponse = await invokeLLM({
       model: "openai/gpt-4o",
       messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: `Question: ${question}\n\nContext Data:\n${JSON.stringify(combinedContext, null, 2)}` }
+        { role: "system", content: SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: `Question: ${question}\n\nRetrieved Context (top ${combinedContext.length} records):\n${JSON.stringify(combinedContext, null, 2)}`,
+        },
       ],
-      response_format: { type: "json_object" }
+      response_format: { type: "json_object" },
     });
 
-    const content = llmResponse.choices[0]?.message?.content;
-    let parsed = { 
-       message: "Error reading response.", 
-       language: "en", 
-       stage: "answer_ready", 
-       found_record: false, 
-       sources: [], 
-       results: [], 
-       attachments: [] 
+    const raw = llmResponse.choices[0]?.message?.content;
+    let parsed: any = {
+      message: "I could not find a matching record in the available IMCAN sources.",
+      language: "en",
+      stage: "answer_ready",
+      found_record: false,
+      sources: [],
+      results: [],
+      attachments: [],
     };
-    
-    if (typeof content === "string") {
-       try {
-         parsed = JSON.parse(content);
-       } catch(e) {}
+
+    if (typeof raw === "string") {
+      try {
+        parsed = JSON.parse(raw);
+      } catch (_) { /* keep default */ }
     }
 
     return res.json(parsed);
-
   } catch (e: any) {
-    console.error("Chat API error", e);
+    console.error("imcan/chat error", e);
     return res.status(500).json({ error: e.message });
   }
 });

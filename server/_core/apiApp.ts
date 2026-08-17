@@ -20,6 +20,7 @@ export async function createApp() {
   registerMicrosoftOAuthRoutes(app);
   
   app.use("/api/imcan", imcanRouter);
+  app.use("/api/new-inventory", imcanRouter);  // /api/new-inventory/search is registered on imcanRouter
   
   app.get("/api/knowledge/debug/search", async (req, res) => {
     const drive_item_id = req.query.drive_item_id as string;
