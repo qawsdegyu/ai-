@@ -1,4 +1,13 @@
 import { invokeLLM } from "./_core/llm";
+import {
+  buildContext,
+  compactHistory,
+  estimateTokens,
+  CONTEXT_HARD_LIMIT_TOKENS,
+  TOO_LARGE_CONTEXT_MESSAGE,
+  truncate,
+  MAX_RESULTS,
+} from "./_core/contextBuilder";
 
 export function requestedLanguageLabel(language: AssistantLanguage) {
   return language === "ar" ? "Arabic" : "English";
@@ -110,16 +119,16 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
       const { getUserConversation } = await import("./aiHistory");
       const pastChat = await getUserConversation(currentUserId, conversationId);
       if (pastChat && pastChat.messages && pastChat.messages.length > 0) {
-         // Get the most recent user message before the current one to aid in DB search
-         const userMessages = [...pastChat.messages].filter((m: any) => m.role === 'user');
-         if (userMessages.length > 1) {
-             previousUserMessageText = userMessages[userMessages.length - 2].content;
-         }
+        // Get the most recent user message before the current one to aid in DB search
+        const userMessages = [...pastChat.messages].filter((m: any) => m.role === 'user');
+        if (userMessages.length > 1) {
+          previousUserMessageText = userMessages[userMessages.length - 2].content.slice(0, 300);
+        }
 
-         // Limit to last 6 messages to keep context relevant and not overload the LLM
-         const recentMessages = pastChat.messages.slice(-6);
-         const historyStr = recentMessages.map((m: any) => `${m.role === 'user' ? 'Employee' : 'Assistant'}: ${m.content}`).join("\n\n");
-         conversationHistoryText = `\n\nPrevious Conversation Context (Use this to answer follow-up questions):\n${historyStr}`;
+        // Compact history: last 6 messages + short summary of older turns
+        const { recentText, summary } = compactHistory(pastChat.messages);
+        const summaryClause = summary ? `Summary of earlier conversation: ${summary}\n\n` : "";
+        conversationHistoryText = `\n\nPrevious Conversation Context:\n${summaryClause}${recentText}`;
       }
     } catch (err) {
       console.error("Failed to load conversation history", err);
@@ -137,19 +146,40 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
   const { eq, and, inArray } = await import("drizzle-orm");
 
   try {
-      // Restore Router Records database context
-      const routerRows = await db.select().from(inventoryRecords);
-      // We only include rows that match the keyword to save LLM context window
-      const oldSearchKeywords = (question + " " + previousUserMessageText).toLowerCase().split(" ").filter(w => w.length > 2);
-      const matchedRouterRows = routerRows.filter(row => 
-         oldSearchKeywords.some(kw => 
-           row.routerName?.toLowerCase().includes(kw) || 
-           row.oldRouterName?.toLowerCase().includes(kw) || 
-           row.siteId?.toLowerCase().includes(kw)
-         )
-      );
-      if (matchedRouterRows.length > 0) {
-        context = buildInventoryContext(matchedRouterRows);
+      // Restore Router Records database context — search only, NEVER fetch all rows
+      const oldSearchKeywords = (question + " " + previousUserMessageText)
+        .toLowerCase().split(" ").filter(w => w.length > 2).slice(0, 10);
+
+      if (oldSearchKeywords.length > 0) {
+        const { ilike, or: drOr } = await import("drizzle-orm");
+        const keywordConditions = oldSearchKeywords.map(kw =>
+          drOr(
+            ilike(inventoryRecords.routerName, `%${kw}%`),
+            ilike(inventoryRecords.oldRouterName, `%${kw}%`),
+            ilike(inventoryRecords.siteId, `%${kw}%`)
+          )
+        );
+        const { or: drOr2 } = await import("drizzle-orm");
+        const matchedRouterRows = await db
+          .select({
+            routerName: inventoryRecords.routerName,
+            oldRouterName: inventoryRecords.oldRouterName,
+            siteId: inventoryRecords.siteId,
+            subnetIp: inventoryRecords.subnetIp,
+            migrationStatus: inventoryRecords.migrationStatus,
+            circuitType: inventoryRecords.circuitType,
+            contactDetails: inventoryRecords.contactDetails,
+            location: inventoryRecords.location,
+            operationalHours: inventoryRecords.operationalHours,
+            country: inventoryRecords.country,
+            city: inventoryRecords.city,
+          })
+          .from(inventoryRecords)
+          .where(drOr2(...keywordConditions))
+          .limit(MAX_RESULTS);
+        if (matchedRouterRows.length > 0) {
+          context = buildInventoryContext(matchedRouterRows);
+        }
       }
       
       // NEW ONEDRIVE SEARCH LOGIC (Using database index)
@@ -486,25 +516,57 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
         const sqlSearchTerms = combinedSearchText.split(" ").filter(w => w.length > 2);
         
         if (sqlSearchTerms.length > 0) {
-          // Fallback exact matching for search_text or row_data values if tsvector doesn't trigger
-          const likeConditions = sqlSearchTerms.map(term => or(
+          // Only fetch a compact set of fields — NEVER return full rowData JSON
+          const likeConditions = sqlSearchTerms.slice(0, 8).map(term => or(
             ilike(imcanRows.sheetName, `%${term}%`),
             ilike(imcanRows.searchText, `%${term}%`)
           ));
-          
-          // Build Postgres tsquery string: term1 | term2
-          const tsQuery = sqlSearchTerms.join(" | ");
+
+          const tsQuery = sqlSearchTerms.slice(0, 8).join(" | ");
           const searchVectorQuery = dsql`search_vector @@ to_tsquery('arabic', ${tsQuery})`;
-          
           const searchCondition = or(searchVectorQuery, ...likeConditions);
-          
-          // Fetch up to 50 results directly from the backend to get all data
-          const results = await db.select().from(imcanRows).where(searchCondition).limit(50);
-          
+
+          // Hard limit: 5 rows max, select only needed columns
+          const results = await db
+            .select({
+              id: imcanRows.id,
+              sheetName: imcanRows.sheetName,
+              sourceRowNumber: imcanRows.sourceRowNumber,
+              searchText: imcanRows.searchText,
+              rowData: imcanRows.rowData,
+            })
+            .from(imcanRows)
+            .where(searchCondition)
+            .limit(MAX_RESULTS);
+
           if (results.length > 0) {
+            // Extract only safe display fields — no full rowData dump
+            const compactRows = results.map(r => {
+              const rd: any = r.rowData ?? {};
+              return {
+                sheet: r.sheetName,
+                row: r.sourceRowNumber,
+                router_name: truncate(rd["Router Name"] ?? rd["Host Name"] ?? rd["Current Versa Router Name"], 120),
+                country: truncate(rd["Country"], 80),
+                city: truncate(rd["City"], 80),
+                site_id: truncate(rd["Site ID"] ?? rd["SITE ID"], 80),
+                subnet: truncate(rd["Subnet IP"] ?? rd["IP"], 300),
+                circuit: truncate(rd["Circuit Type"] ?? rd["Summary"], 300),
+                status: truncate(rd["MCS Status"] ?? rd["Status"], 200),
+                contact: truncate(rd["Contact Details"], 600),
+                hours: truncate(rd["Operational Hours"], 300),
+              };
+            }).filter(r => r.router_name || r.site_id || r.country);
+
             rawFilesContext.push({
               fileName: "IMCAN Database",
-              content: results.map(r => `[Sheet: ${r.sheetName}] [Row: ${r.sourceRowNumber}]\nData: ${JSON.stringify(r.rowData)}`).join("\n\n---\n\n")
+              content: compactRows.map(r =>
+                `[Sheet: ${r.sheet}] [Row: ${r.row}]\n` +
+                Object.entries(r)
+                  .filter(([k, v]) => !['sheet', 'row'].includes(k) && v)
+                  .map(([k, v]) => `  ${k}: ${v}`)
+                  .join("\n")
+              ).join("\n\n---\n\n")
             });
           }
         }
@@ -538,6 +600,50 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
 
   if (!context.length && !rawFilesContext.length) {
     return { answer: noResultsAnswer(question).answer, sources: [], metadata: null, debug: debugInfo };
+  }
+
+  // ── TOKEN SAFETY GATE ──────────────────────────────────────────────────────
+  // Estimate total payload tokens before calling LLM.
+  const systemPromptText = `You are the internal Flight Deck AI Chatbot for IMCAN. Act as a knowledgeable assistant for the company.
+Rules:
+1. ONLY rely on the supplied 'Raw uploaded files context' (which comes from public.imcan_rows). NEVER invent or hallucinate any information not present in the results.
+2. If the answer is found, ALWAYS cite the exact source for each row in this format: "Sheet: {Sheet Name}, Row {Row Number}".
+3. If no sufficient result is found in the context, you MUST reply exactly with this phrase and nothing else: "لم أجد هذه المعلومة في بيانات IMCAN الحالية"
+4. ALWAYS reply in PURE, STRONG ENGLISH, regardless of the language of the user's question. (The ONLY exception is rule 3 where the exact Arabic phrase must be used if no data is found).
+5. ALWAYS format your answer as a clean, structured list of bullet points, bringing all the relevant data found in the context rows and displaying it clearly row by row.`;
+
+  // Build compact context using the context builder
+  const { contextJson, estimatedTokens: ctxTokens, wasTruncated } = buildContext(
+    // Flatten rawFilesContext into result objects for the builder
+    rawFilesContext.flatMap((fc: any) =>
+      (fc.content || "").split("\n\n---\n\n").map((chunk: string) => ({ _raw: chunk, source_file: fc.fileName }))
+    ),
+    conversationHistoryText.slice(0, 1500),
+    question
+  );
+
+  const rawContextText = rawFilesContext.map((fc: any) => fc.content).join("\n\n");
+  // Use whichever is smaller: the structured compact JSON or the raw text
+  const contextForLLM =
+    rawContextText.length / 4 < ctxTokens ? rawContextText : contextJson;
+
+  const totalEstimatedTokens =
+    estimateTokens(systemPromptText) +
+    estimateTokens(question) +
+    estimateTokens(conversationHistoryText) +
+    estimateTokens(contextForLLM) +
+    4_000; // reserved for answer
+
+  console.log(`[LLM Safety] estimated input tokens: ${totalEstimatedTokens}`);
+
+  if (totalEstimatedTokens > CONTEXT_HARD_LIMIT_TOKENS) {
+    console.warn(`[LLM Safety] BLOCKED — payload (${totalEstimatedTokens} tokens) exceeds hard limit of ${CONTEXT_HARD_LIMIT_TOKENS}`);
+    return {
+      answer: TOO_LARGE_CONTEXT_MESSAGE,
+      sources: [],
+      metadata: { error: "context_too_large", estimated_tokens: totalEstimatedTokens },
+      debug: debugInfo,
+    };
   }
 
   let response: any;
@@ -576,15 +682,12 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
     messages: [
       {
         role: "system",
-        content: `You are the internal Flight Deck AI Chatbot for IMCAN. Act as a knowledgeable assistant for the company.
-Rules:
-1. ONLY rely on the supplied 'Raw uploaded files context' (which comes from public.imcan_rows). NEVER invent or hallucinate any information not present in the results.
-2. If the answer is found, ALWAYS cite the exact source for each row in this format: "Sheet: {Sheet Name}, Row {Row Number}".
-3. If no sufficient result is found in the context, you MUST reply exactly with this phrase and nothing else: "لم أجد هذه المعلومة في بيانات IMCAN الحالية"
-4. ALWAYS reply in PURE, STRONG ENGLISH, regardless of the language of the user's question. (The ONLY exception is rule 3 where the exact Arabic phrase must be used if no data is found).
-5. ALWAYS format your answer as a clean, structured list of bullet points, bringing all the relevant data found in the context rows and displaying it clearly row by row.`,
+        content: systemPromptText,
       },
-      { role: "user", content: `Employee question:\n${question}\n\nRaw uploaded files context (Search Results from Database):\n${JSON.stringify(rawFilesContext, null, 2)}${conversationHistoryText}`       },
+      {
+        role: "user",
+        content: `Employee question:\n${question}\n\nRetrieved context (compact, max 5 records):\n${contextForLLM}${conversationHistoryText.slice(0, 1500)}`,
+      },
     ],
     });
   } catch (error: any) {

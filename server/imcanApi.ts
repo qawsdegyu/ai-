@@ -8,6 +8,16 @@ import {
 } from "../drizzle/schema";
 import { eq, or, sql, ilike, inArray, and } from "drizzle-orm";
 import { invokeLLM } from "./_core/llm";
+import {
+  buildContext,
+  estimateTokens,
+  CONTEXT_HARD_LIMIT_TOKENS,
+  TOO_LARGE_CONTEXT_MESSAGE,
+  MAX_RESULTS,
+  MAX_CLIENT_LIMIT,
+  detectIntent,
+  toCompactResult,
+} from "./_core/contextBuilder";
 
 export const imcanRouter = Router();
 
@@ -86,8 +96,11 @@ async function searchExcelRows(opts: {
     city,
     siteId,
     sourceHash,
-    limit = 10,
+    limit = MAX_RESULTS,
   } = opts;
+
+  // Enforce hard cap: never more than MAX_CLIENT_LIMIT rows
+  const safeLimit = Math.min(limit, MAX_CLIENT_LIMIT);
 
   // --- resolve source ID restriction ---
   let restrictedSourceId: number | null = null;
@@ -143,7 +156,7 @@ async function searchExcelRows(opts: {
     .from(imcanRows)
     .leftJoin(imcanSources, eq(imcanRows.sourceId, imcanSources.id))
     .where(finalWhere)
-    .limit(200);
+    .limit(Math.min(safeLimit * 10, 100)); // fetch a candidate set then re-rank
 
   // Score each row
   const scored = rawRows.map(({ row: r, source: s }: any) => {
@@ -190,7 +203,7 @@ async function searchExcelRows(opts: {
       (a.source_row_number || 0) - (b.source_row_number || 0)
   );
 
-  return scored.slice(0, limit);
+  return scored.slice(0, safeLimit);
 }
 
 /** Search Word document items and attach related image assets. */
@@ -256,7 +269,11 @@ async function searchWordItems(opts: {
    ───────────────────────────────────────────── */
 imcanRouter.post("/new-inventory/search", async (req, res) => {
   try {
-    const { query, sheet, country, city, site_id, limit = 10 } = req.body;
+    const { query, sheet, country, city, site_id } = req.body;
+    // Enforce retrieval limits: default 5, max 10
+    const rawLimit = Number(req.body.limit ?? MAX_RESULTS);
+    const limit = Math.min(isNaN(rawLimit) ? MAX_RESULTS : rawLimit, MAX_CLIENT_LIMIT);
+
     if (!query || String(query).trim() === "")
       return res.status(400).json({ error: "Missing query" });
 
@@ -281,7 +298,23 @@ imcanRouter.post("/new-inventory/search", async (req, res) => {
         ? "matched"
         : "partial";
 
-    return res.json({ query, status, results });
+    // Compact the row_data — never return the full JSONB object to clients
+    const compactResults = results.map((r: any) => ({
+      source_file: r.source_file,
+      version_label: r.version_label,
+      sheet_name: r.sheet_name,
+      source_row_number: r.source_row_number,
+      fields: r.row_data, // already sanitised by extractRowFields
+      source_score: r.score,
+    }));
+
+    return res.json({
+      status,
+      result_count: compactResults.length,
+      context_token_estimate: estimateTokens(JSON.stringify(compactResults)),
+      results: compactResults,
+      sources: compactResults.map((r: any) => ({ source_file: r.source_file, sheet_name: r.sheet_name, source_row_number: r.source_row_number })),
+    });
   } catch (e: any) {
     console.error("new-inventory/search error", e);
     return res.status(500).json({ error: e.message });
@@ -299,8 +332,11 @@ imcanRouter.post("/search", async (req, res) => {
       city = null,
       site_id = null,
       sheet = null,
-      limit = 10,
     } = req.body;
+
+    // Enforce retrieval limits: default 5, hard max 10
+    const rawLimit = Number(req.body.limit ?? MAX_RESULTS);
+    const limit = Math.min(isNaN(rawLimit) ? MAX_RESULTS : rawLimit, MAX_CLIENT_LIMIT);
 
     if (!query || String(query).trim() === "")
       return res.status(400).json({ error: "Missing query" });
@@ -354,7 +390,17 @@ imcanRouter.post("/search", async (req, res) => {
         ? "matched"
         : "partial";
 
-    return res.json({ query, status, results });
+    // Return compact response — never dump full row_data
+    const intent = detectIntent(query);
+    const compactResults = results.map((r: any) => toCompactResult(r.row_data ? { ...r, ...r.row_data } : r, intent));
+
+    return res.json({
+      status,
+      result_count: compactResults.length,
+      context_token_estimate: estimateTokens(JSON.stringify(compactResults)),
+      results: compactResults,
+      sources: results.map((r: any) => ({ source_file: r.source_file, sheet_name: r.sheet_name, source_row_number: r.source_row_number })),
+    });
   } catch (e: any) {
     console.error("imcan/search error", e);
     return res.status(500).json({ error: e.message });
@@ -470,7 +516,7 @@ imcanRouter.post("/chat", async (req, res) => {
       );
 
     if (!hasIssueKeywords && !isTechnical && !resolved_record) {
-      const sources = combinedContext.slice(0, 3).map((r) => ({
+      const sources = combinedContext.slice(0, 3).map((r: any) => ({
         source_file: r.source_file,
         sheet_name: r.sheet_name,
         source_row_number: r.source_row_number,
@@ -489,6 +535,10 @@ imcanRouter.post("/chat", async (req, res) => {
     }
 
     /* ── STEP 5 & 6: Build AI answer from retrieved context ── */
+    // Build compact context, then estimate total tokens before calling LLM
+    const intent = detectIntent(question);
+    const compactContext = combinedContext.slice(0, MAX_RESULTS).map((r: any) => toCompactResult(r, intent));
+
     const SYSTEM_PROMPT = `You are an English-only IMCAN Data Retrieval Assistant.
 You MUST answer using ONLY the JSON context provided. Never invent data, never use general knowledge.
 All responses must be in English, even if the question is in Arabic.
@@ -535,13 +585,38 @@ Return a JSON object with this schema ONLY:
   "attachments": [{ "asset_name": string, "mime_type": string, "url": string, "reason": string }]
 }`;
 
+    const compactContextJson = JSON.stringify(compactContext);
+
+    // Token safety gate — block if over limit
+    const totalEstimatedTokens =
+      estimateTokens(SYSTEM_PROMPT) +
+      estimateTokens(question) +
+      estimateTokens(compactContextJson) +
+      4_000; // reserved for model answer
+
+    console.log(`[IMCAN /chat] estimated input tokens: ${totalEstimatedTokens}, results: ${compactContext.length}`);
+
+    if (totalEstimatedTokens > CONTEXT_HARD_LIMIT_TOKENS) {
+      console.warn(`[IMCAN /chat] BLOCKED — payload too large (${totalEstimatedTokens} tokens)`);
+      return res.json({
+        message: TOO_LARGE_CONTEXT_MESSAGE,
+        language: "en",
+        stage: "needs_clarification",
+        found_record: false,
+        sources: [],
+        results: [],
+        attachments: [],
+        context_token_estimate: totalEstimatedTokens,
+      });
+    }
+
     const llmResponse = await invokeLLM({
       model: "openai/gpt-4o",
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         {
           role: "user",
-          content: `Question: ${question}\n\nRetrieved Context (top ${combinedContext.length} records):\n${JSON.stringify(combinedContext, null, 2)}`,
+          content: `Question: ${question}\n\nRetrieved Context (top ${compactContext.length} records, compact):\n${compactContextJson}`,
         },
       ],
       response_format: { type: "json_object" },
