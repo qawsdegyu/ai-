@@ -185,7 +185,7 @@ function DashboardLayoutContent({
                   alt="SITA"
                   className="fd-sita-brand__image"
                 />
-                {!isCollapsed && <span className="sr-only">SITA Flight Deck Navigation</span>}
+                {!isCollapsed && <span className="sr-only">Imcan Team Navigation</span>}
               </div>
             </div>
           </SidebarHeader>
