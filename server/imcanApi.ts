@@ -407,12 +407,22 @@ imcanRouter.post("/search", async (req, res) => {
   }
 });
 
-/* ─────────────────────────────────────────────
-   HELPERS for /chat
-   ───────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════
+   INTELLIGENT CHATBOT ROUTER
+   ─────────────────────────────────────────────────────────────────
+   Intent types:
+     A. DIRECT_ROUTER_LOOKUP      – user gave a clear identifier
+     B. DIRECT_DATA_QUESTION      – specific searchable question
+     C. GENERAL_PROBLEM_NO_TARGET – vague complaint, no identifier
+     D. TARGET_AND_PROBLEM        – identifier + issue in one msg
+     E. AMBIGUOUS_QUERY           – too broad to match
+     F. TECHNICAL_PROCEDURE_QUERY – printer/firmware/VCOM/XML/…
+   ═══════════════════════════════════════════════════════════════════ */
 
-/** Reject Arabic fallback messages — replace with English equivalent. */
+/* ─── English enforcement ──────────────────────────────────────── */
+
 function sanitiseResponseMessage(msg: string): string {
+  // Never show Arabic fallback text to the user
   if (/[\u0600-\u06FF]/.test(msg))
     return "I could not find a matching record in the available IMCAN sources.";
   return msg;
@@ -423,51 +433,251 @@ function buildUserResponse(payload: Record<string, any>): Record<string, any> {
   return { ...payload, language: "en", message: sanitiseResponseMessage(String(payload.message ?? "")) };
 }
 
-/** Extract a searchable site/router identifier from free-form text, or null. */
-function extractTargetIdentifier(question: string): string | null {
-  // Versa router (VAPAMM001, VAPLON002 …)
-  const m1 = question.match(/\b(VAP[A-Z0-9_-]{3,})\b/i);
-  if (m1) return m1[1].toUpperCase();
-  // Airport IATA code (3 uppercase letters)
-  const m2 = question.match(/\b([A-Z]{3})\b/);
-  if (m2) return m2[1];
-  // Generic site-ID: 5+ alphanum chars that contain a digit
-  for (const tok of question.split(/\s+/)) {
-    if (/^[A-Z0-9_-]{5,}$/i.test(tok) && /[0-9]/.test(tok)) return tok.toUpperCase();
-  }
-  // Geo keywords
-  const m3 = question.match(
-    /\b(jordan|amman|canada|montreal|london|paris|cairo|dubai|kuwait|doha|riyadh|bahrain|abu dhabi|istanbul|beirut|damascus|baghdad|muscat|karachi|delhi|mumbai|singapore)\b/i
-  );
-  if (m3) return m3[1];
-  return null;
+/* ─── Entity extraction ─────────────────────────────────────────── */
+
+interface ExtractedEntities {
+  versaRouter: string | null;   // e.g. VAPAMM001
+  siteId: string | null;        // e.g. SITE-123
+  airportCode: string | null;   // e.g. AMM
+  country: string | null;
+  city: string | null;
+  subnet: string | null;
+  hostname: string | null;
+  technicalKeyword: string | null;
+  issueDescription: string | null;
 }
 
-/** True when the message is only a vague complaint with no searchable identifier. */
-function isGeneralIssueOnly(question: string): boolean {
-  if (extractTargetIdentifier(question)) return false;
-  const q = question.trim();
-  return (
+/** Extract all known entity types from a free-form message. */
+function extractEntities(msg: string): ExtractedEntities {
+  const q = msg;
+
+  // Versa router name (VAP prefix)
+  const versaMatch = q.match(/\b(VAP[A-Z0-9_-]{3,})\b/i);
+  const versaRouter = versaMatch ? versaMatch[1].toUpperCase() : null;
+
+  // Site ID: letters+digits separated by dashes, min 5 chars
+  const siteMatch = q.match(/\b([A-Z]{2,4}-\d{3,})\b/i);
+  const siteId = siteMatch && !versaRouter ? siteMatch[1].toUpperCase() : null;
+
+  // Airport IATA code (exactly 3 uppercase letters standing alone)
+  const iataMatch = q.match(/\b([A-Z]{3})\b/);
+  const airportCode = iataMatch && !versaRouter ? iataMatch[1] : null;
+
+  // Subnet (IP address pattern)
+  const subnetMatch = q.match(/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?:\/\d{1,2})?)\b/);
+  const subnet = subnetMatch ? subnetMatch[1] : null;
+
+  // Known countries
+  const countryMatch = q.match(
+    /\b(jordan|saudi arabia|bahrain|kuwait|qatar|uae|oman|egypt|iraq|lebanon|syria|canada|uk|france|germany|usa|india|singapore|malaysia|turkey|pakistan)\b/i
+  );
+  const country = countryMatch ? countryMatch[1] : null;
+
+  // Known cities
+  const cityMatch = q.match(
+    /\b(amman|riyadh|manama|kuwait city|doha|dubai|abu dhabi|muscat|cairo|baghdad|beirut|damascus|montreal|london|paris|berlin|karachi|delhi|mumbai|istanbul|ankara)\b/i
+  );
+  const city = cityMatch ? cityMatch[1] : null;
+
+  // Hostname (dotted notation or domain-like)
+  const hostMatch = q.match(/\b([a-z0-9][a-z0-9_-]{3,}\.[a-z0-9.-]{2,})\b/i);
+  const hostname = hostMatch ? hostMatch[1] : null;
+
+  // Technical keywords
+  const techKeywords = [
+    "vcom", "printer", "firmware", "printerset", "usb", "xml",
+    "amadeus", "atb", "btp", "com port", "driver", "upgrade",
+    "configuration", "configure",
+  ];
+  const ql = q.toLowerCase();
+  const technicalKeyword = techKeywords.find((k) => ql.includes(k)) ?? null;
+
+  // Issue keywords
+  const issueMatch = q.match(
+    /\b(not responding|unreachable|down|failed|offline|slow|latency|drop|cannot|can't|not working|error|fault|outage|issue|problem)\b/i
+  );
+  const issueDescription = issueMatch ? issueMatch[0] : null;
+
+  return {
+    versaRouter, siteId, airportCode, country, city,
+    subnet, hostname, technicalKeyword, issueDescription,
+  };
+}
+
+/** Returns the primary search term(s) from extracted entities. */
+function buildSearchQuery(entities: ExtractedEntities, raw: string): string {
+  if (entities.versaRouter) return entities.versaRouter;
+  if (entities.siteId) return entities.siteId;
+  if (entities.subnet) return entities.subnet;
+  if (entities.hostname) return entities.hostname;
+  if (entities.technicalKeyword) return entities.technicalKeyword;
+  const parts = [entities.country, entities.city, entities.airportCode].filter(Boolean);
+  if (parts.length) return parts.join(" ");
+  return raw; // fallback: raw question
+}
+
+/* ─── Intent classifier ─────────────────────────────────────────── */
+
+type ChatIntent =
+  | "DIRECT_ROUTER_LOOKUP"       // A: has identifier, no issue yet
+  | "DIRECT_DATA_QUESTION"       // B: specific searchable question
+  | "GENERAL_PROBLEM_NO_TARGET"  // C: vague, no identifier
+  | "TARGET_AND_PROBLEM"         // D: identifier + issue in one msg
+  | "AMBIGUOUS_QUERY"            // E: too short / too broad
+  | "TECHNICAL_PROCEDURE_QUERY"; // F: printer/VCOM/XML/Amadeus/…
+
+function classifyIntent(msg: string, entities: ExtractedEntities): ChatIntent {
+  const q = msg.trim().toLowerCase();
+
+  // F: Technical procedure keywords (always Word doc search, no router required)
+  if (entities.technicalKeyword) return "TECHNICAL_PROCEDURE_QUERY";
+
+  const hasIdentifier = !!(
+    entities.versaRouter || entities.siteId || entities.airportCode ||
+    entities.hostname || entities.subnet || entities.country || entities.city
+  );
+  const hasIssue = !!entities.issueDescription;
+
+  // D: Has both identifier and issue in the same message
+  if (hasIdentifier && hasIssue) return "TARGET_AND_PROBLEM";
+
+  // A: Has identifier but no issue
+  if (hasIdentifier && !hasIssue) return "DIRECT_ROUTER_LOOKUP";
+
+  // B: Specific searchable data question (no router needed)
+  if (
+    /\b(who is|what is|which|how do|how to|where is|what are|give me|show me|list|find|get|tell me)\b/i.test(msg) &&
+    /\b(resolver|escalation|contact|scc|dns|hostname|procedure|step|configure|configuration|firmware|vcom|printer|sites? in|routers? in|subnet|circuit)\b/i.test(msg)
+  ) {
+    return "DIRECT_DATA_QUESTION";
+  }
+
+  // E: Too short or ambiguous (less than 4 chars or only 1 token)
+  const tokens = msg.trim().split(/\s+/);
+  if (tokens.length === 1 && tokens[0].length < 6) return "AMBIGUOUS_QUERY";
+
+  // C: General vague complaint
+  if (
+    /^(hello|hi|hey|help|i need help|can you help|please help)/i.test(q) ||
     /^i (have|got|am having|am facing) (a |an )?(router|network|internet|connectivity|vpn|link|circuit|wan|switch|issue|problem|error|fault|outage|incident)/i.test(q) ||
     /^(there is|there's|we have|we got) (a |an )?(problem|issue|outage|fault|incident)/i.test(q) ||
     /^(the |a )?(router|network|link|circuit|switch) (is |are )?(down|not responding|not working|unreachable|failed|offline)/i.test(q) ||
-    /^(help|i need help|can you help|please help)/i.test(q) ||
-    /^(hello|hi|hey|سلام|مرحبا|مرحباً)/i.test(q)
-  );
+    (!hasIdentifier && !hasIssue)
+  ) {
+    return "GENERAL_PROBLEM_NO_TARGET";
+  }
+
+  return "GENERAL_PROBLEM_NO_TARGET";
 }
 
-/* ─────────────────────────────────────────────
-   ROUTE: /api/imcan/chat
-   State machine:
-     WAITING_FOR_TARGET → TARGET_FOUND → WAITING_FOR_ISSUE
-                       → ISSUE_SEARCH  → ANSWER_READY
-   ───────────────────────────────────────────── */
+/* ─── Smart clarification question ─────────────────────────────── */
+
+function buildClarificationQuestion(entities: ExtractedEntities, raw: string): string {
+  // Problem-type aware clarification
+  if (entities.technicalKeyword === "printer" || /printer/i.test(raw)) {
+    return "Which site or printer are you referring to, and what is the exact printer issue?";
+  }
+  if (/vcom/i.test(raw)) {
+    return "Which site or router VCOM configuration do you need?";
+  }
+  return "Which site, airport, router, or site ID should I search for?";
+}
+
+/* ─── Source selection ──────────────────────────────────────────── */
+
+type SourcePriority = "NEW_INVENTORY" | "IMCAN_REFERENCE" | "WORD_DOC" | "ALL";
+
+function selectSource(intent: ChatIntent, entities: ExtractedEntities): SourcePriority {
+  if (intent === "TECHNICAL_PROCEDURE_QUERY") return "WORD_DOC";
+  if (
+    /\b(resolver|escalation|scc|dns|operational|historical|major router|major.router)\b/i.test(
+      `${entities.technicalKeyword ?? ""} ${entities.issueDescription ?? ""}`
+    )
+  ) return "IMCAN_REFERENCE";
+  return "NEW_INVENTORY"; // default: current inventory first, then reference as fallback
+}
+
+/* ─── LLM system prompt ─────────────────────────────────────────── */
+
+const CHAT_SYSTEM_PROMPT = `You are an English-only IMCAN Support Data Assistant.
+All user-facing messages must be in English. Never answer in Arabic, even when the user writes in Arabic.
+Use ONLY the verified data from the retrieved database context. Never invent data.
+
+STRICT RULES:
+1. Never display old/legacy router names unless explicitly asked.
+2. Never show boolean values (true/false). Convert to Yes/No if relevant, or omit entirely.
+3. Never show null, undefined, empty objects, or raw JSON.
+4. Never combine fields from different rows into one answer.
+5. Every factual answer must cite: Source File, Sheet Name, and Original Row Number (or Document Position).
+6. If not found, respond exactly: "I could not find a matching record in the available IMCAN sources."
+7. If partial match: "I found a partial match, but the available data is not sufficient to confirm."
+8. ALWAYS respond in English only.
+
+RESPONSE FORMAT (English bullet points — omit any field that is empty, null, false, or undefined):
+- Finding:
+- Current Versa Router Name:
+- Site ID:
+- Country:
+- City:
+- Issue:
+- Relevant Data:
+- Contact or Resolver:
+- Source File:
+- Sheet or Document Section:
+- Original Row Number or Document Position:
+- Related Image:
+
+Return a JSON object with this schema ONLY:
+{
+  "message": "Full English bullet-point answer",
+  "language": "en",
+  "stage": "answer_ready",
+  "found_record": boolean,
+  "sources": [{ "source_file": string, "sheet_name"?: string, "source_row_number"?: number, "position"?: number }],
+  "results": [],
+  "attachments": [{ "asset_name": string, "mime_type": string, "url": string, "reason": string }]
+}`;
+
+/* ─── Helpers: response building and no-match ───────────────────── */
+
+function buildUserResponse(payload: Record<string, any>): Record<string, any> {
+  return {
+    ...payload,
+    language: "en",
+    message: sanitiseResponseMessage(String(payload.message ?? "")),
+  };
+}
+
+function noMatchForTarget(target: string): Record<string, any> {
+  return buildUserResponse({
+    stage: "answer_ready",
+    message:
+      `I could not find "${target}" in the available IMCAN sources. ` +
+      "Please check the router name or provide the country, city, airport, or site ID.",
+    found_record: false,
+    sources: [],
+    results: [],
+    attachments: [],
+  });
+}
+
+function sourceNotSufficient(): Record<string, any> {
+  return buildUserResponse({
+    stage: "answer_ready",
+    message:
+      "I found the relevant source, but it does not contain enough information to answer this question.",
+    found_record: false,
+    sources: [],
+    results: [],
+    attachments: [],
+  });
+}
+
+/* ─── /api/imcan/chat route ─────────────────────────────────────── */
+
 imcanRouter.post("/chat", async (req, res) => {
   try {
-    const {
-      question,
-      resolved_record = null,
-    } = req.body;
+    const { question, resolved_record = null } = req.body;
 
     if (!question || String(question).trim() === "")
       return res.status(400).json({ error: "Missing question" });
@@ -475,24 +685,24 @@ imcanRouter.post("/chat", async (req, res) => {
     const db = await getDb();
     if (!db) return res.status(500).json({ error: "No DB" });
 
-    const cleanQ = cleanText(question);
-    const terms = cleanQ.split(" ").filter((w) => w.length > 1);
-    const isTechnical = isTechnicalQuery(terms);
+    /* ── Step 1: Classify intent ── */
+    const entities = extractEntities(question);
+    const intent = classifyIntent(question, entities);
+    const sourcePriority = selectSource(intent, entities);
+    const searchQuery = buildSearchQuery(entities, question);
+    const terms = cleanText(question).split(" ").filter((w) => w.length > 1);
+
+    console.log(`[IMCAN /chat] intent=${intent} source=${sourcePriority} query="${searchQuery}"`);
 
     /* ══════════════════════════════════════════════════════════════
-       STATE: WAITING_FOR_TARGET
-       If the message is a general complaint with no searchable
-       identifier, return the clarification question immediately.
-       No DB call, no LLM call.
+       INTENT C: GENERAL_PROBLEM_NO_TARGET
+       Vague complaint — ask for identifier. NO DB call, NO LLM.
     ══════════════════════════════════════════════════════════════ */
-    const targetId = extractTargetIdentifier(question);
-    const generalOnly = isGeneralIssueOnly(question);
-
-    if (!targetId && !resolved_record && !isTechnical && generalOnly) {
+    if (intent === "GENERAL_PROBLEM_NO_TARGET" && !resolved_record) {
       return res.json(
         buildUserResponse({
           stage: "waiting_for_target",
-          message: "Which site, airport, router, or site ID should I search for?",
+          message: buildClarificationQuestion(entities, question),
           found_record: false,
           sources: [],
           results: [],
@@ -501,124 +711,120 @@ imcanRouter.post("/chat", async (req, res) => {
       );
     }
 
-    /* ── STEP 2 & 4: Search sources ── */
+    /* ══════════════════════════════════════════════════════════════
+       INTENT E: AMBIGUOUS_QUERY
+       Too short / too broad — ask to narrow. NO DB call, NO LLM.
+    ══════════════════════════════════════════════════════════════ */
+    if (intent === "AMBIGUOUS_QUERY" && !resolved_record) {
+      return res.json(
+        buildUserResponse({
+          stage: "waiting_for_target",
+          message:
+            "I found multiple possible matches. Please provide the country, city, airport, or site ID.",
+          found_record: false,
+          sources: [],
+          results: [],
+          attachments: [],
+        })
+      );
+    }
+
+    /* ══════════════════════════════════════════════════════════════
+       SEARCH: All other intents require a DB query
+    ══════════════════════════════════════════════════════════════ */
     let excelContext: any[] = [];
     let wordContext: any[] = [];
 
-    // Always try NewInventory first for site/router lookup
-    const newInvResults = await searchExcelRows({
-      db,
-      query: question,
-      sourceHash: NEW_INVENTORY_HASH,
-      limit: 5,
-    });
-    excelContext.push(...newInvResults);
-
-    // If question looks like it needs historical/operational data, also search old IMCAN
-    if (!isTechnical) {
-      const oldResults = await searchExcelRows({
-        db,
-        query: question,
-        limit: 5,
+    if (sourcePriority === "WORD_DOC" || intent === "TECHNICAL_PROCEDURE_QUERY") {
+      // F: Word document first for technical procedures
+      wordContext = await searchWordItems({ db, terms, limit: 5 });
+      // Also search Excel if we have a site/city context
+      if (entities.country || entities.city || entities.versaRouter) {
+        const excelResults = await searchExcelRows({
+          db, query: searchQuery, limit: MAX_RESULTS,
+        });
+        excelContext = excelResults;
+      }
+    } else if (sourcePriority === "IMCAN_REFERENCE") {
+      // B: IMCAN reference sheet for operational/resolver data
+      excelContext = await searchExcelRows({
+        db, query: searchQuery, limit: MAX_RESULTS,
       });
-      // Add old results that aren't duplicates
-      const existing = new Set(
-        excelContext.map(
-          (r) => `${r.source_file}|${r.sheet_name}|${r.source_row_number}`
-        )
-      );
-      for (const r of oldResults) {
+    } else {
+      // Default: NewInventory first, then IMCAN reference as fallback
+      const newInv = await searchExcelRows({
+        db, query: searchQuery,
+        sourceHash: NEW_INVENTORY_HASH,
+        country: entities.country ?? undefined,
+        city: entities.city ?? undefined,
+        siteId: entities.siteId ?? undefined,
+        limit: MAX_RESULTS,
+      });
+      excelContext.push(...newInv);
+
+      // Fallback to IMCAN reference for any gaps
+      const ref = await searchExcelRows({
+        db, query: searchQuery,
+        country: entities.country ?? undefined,
+        city: entities.city ?? undefined,
+        siteId: entities.siteId ?? undefined,
+        limit: MAX_RESULTS,
+      });
+      const seen = new Set(excelContext.map((r) => `${r.source_file}|${r.sheet_name}|${r.source_row_number}`));
+      for (const r of ref) {
         const key = `${r.source_file}|${r.sheet_name}|${r.source_row_number}`;
-        if (!existing.has(key)) excelContext.push(r);
+        if (!seen.has(key)) { seen.add(key); excelContext.push(r); }
       }
     }
 
-    // Search Word doc for technical queries
-    if (isTechnical) {
-      wordContext = await searchWordItems({ db, terms, limit: 5 });
-    }
-
-    // Combine — Word context for technical, Excel for everything else
-    const combinedContext = isTechnical
+    const combinedContext = intent === "TECHNICAL_PROCEDURE_QUERY"
       ? [...wordContext, ...excelContext]
       : [...excelContext, ...wordContext];
 
-    /* ════════════════════════════════════════════════════════════
-       No records found
-    ════════════════════════════════════════════════════════════ */
+    /* ── No results ── */
     if (combinedContext.length === 0) {
-      return res.json(
-        buildUserResponse({
-          stage: "answer_ready",
-          message:
-            "I could not find this site or router in the available IMCAN sources. " +
-            "Please check the router name or provide the country, city, airport, or site ID.",
-          found_record: false,
-          sources: [],
-          results: [],
-          attachments: [],
-        })
-      );
+      const target = entities.versaRouter ?? entities.siteId ?? entities.airportCode
+        ?? entities.hostname ?? entities.city ?? entities.country ?? searchQuery;
+      return res.json(noMatchForTarget(target));
     }
 
-    /* ════════════════════════════════════════════════════════════
-       STATE: TARGET_FOUND
-       Exactly one router matched, but no issue stated yet.
-       Confirm the record and ask for the problem. NO LLM call.
-    ════════════════════════════════════════════════════════════ */
-    const topResult = combinedContext[0];
-
-    // Multiple distinct routers → ask to narrow down
-    const uniqueRouters = new Set(
-      combinedContext
-        .map((r: any) => r.current_versa_router_name || r.row_data?.["Router Name"] || r.row_data?.["Host Name"])
-        .filter(Boolean)
-    );
-    if (uniqueRouters.size > 1 && !resolved_record) {
-      const sourceSummary = combinedContext.slice(0, 3).map((r: any) => ({
-        source_file: r.source_file,
-        sheet_name: r.sheet_name,
-        source_row_number: r.source_row_number,
-      }));
-      return res.json(
-        buildUserResponse({
-          stage: "waiting_for_target",
-          message:
-            "I found multiple matching records. Please provide the country, city, airport, or site ID to narrow the search.",
-          found_record: false,
-          sources: sourceSummary,
-          results: [],
-          attachments: [],
-        })
-      );
-    }
-
-    const hasIssueKeywords =
-      question.split(" ").length > 3 ||
-      /\?|problem|issue|down|fail|error|unreachable|cannot|can't|not.working|slow|latency|drop|circuit|escalat|contact|resolver|firmware|printer|vcom|xml|upgrade/i.test(
-        question
+    /* ══════════════════════════════════════════════════════════════
+       INTENT A: DIRECT_ROUTER_LOOKUP
+       Identifier found but no issue yet → confirm record, ask for problem.
+       NO LLM call.
+    ══════════════════════════════════════════════════════════════ */
+    if (intent === "DIRECT_ROUTER_LOOKUP" && !resolved_record) {
+      // Multiple distinct routers → ask for disambiguation
+      const uniqueRouters = new Set(
+        combinedContext
+          .map((r: any) =>
+            r.row_data?.["Router Name"] ??
+            r.row_data?.["Host Name"] ??
+            r.row_data?.["Current Versa Router Name"] ??
+            r.current_versa_router_name
+          )
+          .filter(Boolean)
       );
 
-    if (!hasIssueKeywords && !isTechnical && !resolved_record) {
-      const sources = combinedContext.slice(0, 3).map((r: any) => ({
-        source_file: r.source_file,
-        sheet_name: r.sheet_name,
-        source_row_number: r.source_row_number,
-        position: r.position,
-      }));
-      return res.json(
-        buildUserResponse({
-          stage: "waiting_for_issue",
-          message: "I found the matching site and router record. What problem would you like me to investigate?",
-          found_record: true,
-          sources,
-          results: [],
-          attachments: [],
-        })
-      );
-    }
+      if (uniqueRouters.size > 1) {
+        return res.json(
+          buildUserResponse({
+            stage: "waiting_for_target",
+            message:
+              "I found multiple matching records. Please provide the country, city, airport, or site ID to narrow the search.",
+            found_record: false,
+            sources: combinedContext.slice(0, 3).map((r: any) => ({
+              source_file: r.source_file,
+              sheet_name: r.sheet_name,
+              source_row_number: r.source_row_number,
+            })),
+            results: [],
+            attachments: [],
+          })
+        );
+      }
 
-    /* ════════════════════════════════════════════════════════════
+      // Exactly one router fo�═════════════
        STATE: ANSWER_READY — call LLM with compact context
     ════════════════════════════════════════════════════════════ */
     const intent = detectIntent(question);
