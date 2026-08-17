@@ -21,7 +21,6 @@ function Router() {
 
         <Route path={"/admin/users"} component={Home} />
         <Route path={"/assistant"} component={Home} />
-        <Route path={"/editor"} component={Home} />
         <Route path={"/404"} component={NotFound} />
         {/* Final fallback route */}
         <Route component={NotFound} />
