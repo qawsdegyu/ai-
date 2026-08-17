@@ -453,37 +453,40 @@ export async function answerInventoryQuestion({ question, language, fileId, curr
       }
       
       // NEW IMCAN SQL DATABASE SEARCH
+      // NEW IMCAN SQL DATABASE SEARCH
       try {
-        const { imcanReferenceData, imcanEucData } = await import("../drizzle/schema");
+        const { imcanRows } = await import("../drizzle/schema");
         const { ilike, or, sql: dsql } = await import("drizzle-orm");
         
-        const sqlSearchTerms = question.toLowerCase().split(" ").filter(w => w.length > 2);
+        // Clean user question: remove extra spaces
+        const cleanQuestion = question.replace(/\s+/g, " ").trim().toLowerCase();
+        const sqlSearchTerms = cleanQuestion.split(" ").filter(w => w.length > 2);
+        
         if (sqlSearchTerms.length > 0) {
-          const refConditions = sqlSearchTerms.map(term => or(
-            ilike(imcanReferenceData.itemName, `%${term}%`),
-            ilike(imcanReferenceData.category, `%${term}%`),
-            dsql`CAST(${imcanReferenceData.fullData} AS TEXT) ILIKE ${'%' + term + '%'}`
+          // Fallback exact matching for search_text or row_data values if tsvector doesn't trigger
+          const likeConditions = sqlSearchTerms.map(term => or(
+            ilike(imcanRows.sheetName, `%${term}%`),
+            ilike(imcanRows.searchText, `%${term}%`)
           ));
           
-          const refResults = await db.select().from(imcanReferenceData).where(or(...refConditions)).limit(20);
-          if (refResults.length > 0) {
+          // Build Postgres tsquery string: term1 | term2
+          const tsQuery = sqlSearchTerms.join(" | ");
+          const searchVectorQuery = dsql`search_vector @@ to_tsquery('arabic', ${tsQuery})`;
+          
+          const searchCondition = or(searchVectorQuery, ...likeConditions);
+          
+          // Fetch top 10 results directly from the backend
+          const results = await db.select().from(imcanRows).where(searchCondition).limit(10);
+          
+          if (results.length > 0) {
             rawFilesContext.push({
-              fileName: "IMCAN-Reference-Sheet---2024.xlsm (SQL DB)",
-              content: refResults.map(r => `[Sheet: ${r.sheetName}] [Row: ${r.rowIndex}] Name: ${r.itemName} | Category: ${r.category} | Details: ${JSON.stringify(r.fullData)}`).join("\n\n")
-            });
-          }
-
-          const eucConditions = sqlSearchTerms.map(term => ilike(imcanEucData.contentChunk, `%${term}%`));
-          const eucResults = await db.select().from(imcanEucData).where(or(...eucConditions)).limit(10);
-          if (eucResults.length > 0) {
-            rawFilesContext.push({
-              fileName: "IMCAN EUC Sheet 2024.docx (SQL DB)",
-              content: eucResults.map(r => `[Document Chunk]\n${r.contentChunk}`).join("\n\n---\n\n")
+              fileName: "IMCAN Database",
+              content: results.map(r => `[Sheet: ${r.sheetName}] [Row: ${r.sourceRowNumber}]\nData: ${JSON.stringify(r.rowData)}`).join("\n\n---\n\n")
             });
           }
         }
       } catch (e) {
-        console.error("Error querying new IMCAN SQL tables:", e);
+        console.error("Error querying new imcan_rows:", e);
       }
 
   } catch (err: any) {
@@ -550,9 +553,14 @@ export async function answerInventoryQuestion({ question, language, fileId, curr
     messages: [
       {
         role: "system",
-        content: `You are the internal Flight Deck data specialist for the company. Act as a knowledgeable employee who helps colleagues understand the company's active OneDrive and Excel files. You may analyze, compare, calculate, group, and explain information, but every factual claim must be traceable to the supplied indexed context.\n\nRules:\n1. First identify the user's intent and choose the appropriate evidence fields, worksheet, row, column, or cell from the supplied context. Use a clear reasoning method internally (lookup, row reconstruction, aggregation, comparison, or calculation), but do not expose private chain-of-thought. Show only the verified result and a short explanation. If the user enters a keyword, ID, or Router Name (like 'VTOALYSV01'), extract and summarize all details about it from the context. NEVER invent values. If not found, answer EXACTLY: "لم أجد هذه المعلومة في ملفات OneDrive النشطة والمفهرسة."\n2. ALWAYS provide the precise source from the context. If using 'excel', provide filename, sheet name, and cell address (e.g. A5).\n3. NEVER invent a sheet name or cell like "Dashboard" or "manual". The cell address MUST be extracted from the context brackets (e.g. [A5]).\n4. Reply as a normal human-readable Markdown answer, never as JSON, never as a schema definition, and never expose technical output-format instructions. Organize the answer under headings such as **الخلاصة**, **البيانات**, **الاستنتاج**, and **المصدر**. Always include the exact file name, worksheet, and cell or cell range. Include a clickable Google Drive link only when an actual googleDriveUrl is provided; never relabel another storage URL as Google Drive. If the question concerns a location, show Country, City, and the precise Excel row location separately. Never fabricate a link or location; write "غير متوفر في المصدر" when absent.\n5. Detect the language of the user's question. Answer in that same language: use English for an English question and Arabic for an Arabic question. Do not let the language of the source file override the language of the answer.\n6. IMPORTANT FORMATTING: Use Markdown bullet points to separate English terms (like Router Name, Status, IP) from Arabic text, to prevent text direction (RTL/LTR) from corrupting the sentence structure. Keep the answer extremely concise and structured.\n7. DO NOT TRANSLATE OR ALTER SOURCE VALUES. When extracting text, data, notes, names, statuses, or technical terms from the files/database, output the EXACT raw string as found in the source. You may explain the value in the question's language, but always include the original file text unchanged. Never replace English source text with an Arabic translation, and never replace Arabic source text with an English translation.\n8. Treat the indexed file context as the company's authoritative knowledge base, not general web knowledge. Do not answer from memory or prior training when the question is about company files. If evidence is incomplete, say exactly what is missing and do not fill the gap. For calculations, show the input cells and the calculation result briefly. For comparisons, identify both source locations. For a multi-row answer, include the relevant row and cell references for each conclusion.\n9. Write the answer as if you are helping a colleague inside the company: start with a direct natural-language conclusion, then present the relevant company record, a short explanation, and one compact source section. Do not repeat the same file and link under every field. Keep source values unchanged. Do not include Flight Deck, AnyDesk, or internal navigation links. Include only a real Google Drive link when the context provides one.`,
+        content: `You are the internal Flight Deck AI Chatbot for IMCAN. Act as a knowledgeable assistant for the company.
+Rules:
+1. ONLY rely on the supplied 'Raw uploaded files context' (which comes from public.imcan_rows). NEVER invent or hallucinate any information not present in the results.
+2. If the answer is found, ALWAYS cite the exact source in this format: "{Sheet Name}، الصف {Row Number}" (e.g. "Inventory، الصف 42" or "Resolver Groups، الصف 8").
+3. If no sufficient result is found in the context, you MUST reply exactly with this phrase and nothing else: "لم أجد هذه المعلومة في بيانات IMCAN الحالية"
+4. Reply in Arabic if the question is Arabic, and English if English, but the missing data phrase must remain exact if applicable. Keep answers concise.`,
       },
-      { role: "user", content: `Employee question:\n${question}\n\nInventory context (authoritative records):\n${JSON.stringify(context, null, 2)}\n\nRaw uploaded files context (search these if standard records do not have the answer):\n${JSON.stringify(rawFilesContext, null, 2)}`       },
+      { role: "user", content: `Employee question:\n${question}\n\nRaw uploaded files context (Search Results from Database):\n${JSON.stringify(rawFilesContext, null, 2)}`       },
     ],
     });
   } catch (error: any) {

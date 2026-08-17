@@ -450,12 +450,12 @@ export const appRouter = router({
     }),
     getReferenceSheets: protectedProcedure.query(async () => {
       const { getDb } = await import("./db");
-      const { imcanReferenceData } = await import("../drizzle/schema");
-      const { sql } = await import("drizzle-orm");
+      const { imcanSheets } = await import("../drizzle/schema");
+      const { asc } = await import("drizzle-orm");
       const db = await getDb();
       if (!db) return [];
-      const res = await db.execute(sql`SELECT DISTINCT sheet_name FROM imcan_reference_data WHERE sheet_name IS NOT NULL ORDER BY sheet_name`);
-      return res.map(r => r.sheet_name as string);
+      const res = await db.select({ sheetName: imcanSheets.sheetName }).from(imcanSheets).orderBy(asc(imcanSheets.sheetOrder));
+      return res.map(r => r.sheetName);
     }),
     getReferenceData: protectedProcedure.input(z.object({ 
       sheetName: z.string().optional(),
@@ -464,7 +464,7 @@ export const appRouter = router({
       search: z.string().optional()
     }).optional()).query(async ({ input }) => {
       const { getDb } = await import("./db");
-      const { imcanReferenceData } = await import("../drizzle/schema");
+      const { imcanRows } = await import("../drizzle/schema");
       const { eq, ilike, sql, and } = await import("drizzle-orm");
       const db = await getDb();
       if (!db) return { data: [], total: 0, page: 1, limit: 50 };
@@ -476,43 +476,50 @@ export const appRouter = router({
       let condition = undefined;
       if (input?.sheetName && input?.search) {
          condition = and(
-           eq(imcanReferenceData.sheetName, input.sheetName),
-           sql`${imcanReferenceData.fullData}::text ILIKE ${'%' + input.search + '%'}`
+           eq(imcanRows.sheetName, input.sheetName),
+           ilike(imcanRows.searchText, `%${input.search}%`)
          );
       } else if (input?.sheetName) {
-         condition = eq(imcanReferenceData.sheetName, input.sheetName);
+         condition = eq(imcanRows.sheetName, input.sheetName);
       } else if (input?.search) {
-         condition = sql`${imcanReferenceData.fullData}::text ILIKE ${'%' + input.search + '%'}`;
+         condition = ilike(imcanRows.searchText, `%${input.search}%`);
       }
 
-      const [{ count }] = await db.select({ count: sql<number>`cast(count(*) as integer)` }).from(imcanReferenceData).where(condition);
+      const [{ count }] = await db.select({ count: sql<number>`cast(count(*) as integer)` }).from(imcanRows).where(condition);
       
-      const data = await db.select().from(imcanReferenceData).where(condition).limit(limit).offset(offset).orderBy(imcanReferenceData.id);
+      const rawData = await db.select().from(imcanRows).where(condition).limit(limit).offset(offset).orderBy(imcanRows.sourceRowNumber);
+      
+      // Map to old schema format for frontend compatibility
+      const data = rawData.map(r => ({
+        id: r.id,
+        sheetName: r.sheetName,
+        rowIndex: r.sourceRowNumber,
+        fullData: r.rowData
+      }));
       
       return { data, total: count, page, limit };
     }),
     updateReferenceData: adminProcedure.input(z.object({ id: z.number(), fullData: z.any() })).mutation(async ({ input }) => {
       const { getDb } = await import("./db");
-      const { imcanReferenceData } = await import("../drizzle/schema");
+      const { imcanRows } = await import("../drizzle/schema");
       const { eq } = await import("drizzle-orm");
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
       
-      const itemName = input.fullData?.Name || input.fullData?.Item || input.fullData?.Device || input.fullData?.['اسم'] || input.fullData?.Title || 'Unknown';
-      const category = input.fullData?.Category || input.fullData?.Issue || input.fullData?.Network || input.fullData?.Problem || input.fullData?.Type || 'General';
+      const searchText = JSON.stringify(input.fullData).toLowerCase();
 
-      await db.update(imcanReferenceData)
-        .set({ fullData: input.fullData, itemName: String(itemName), category: String(category) })
-        .where(eq(imcanReferenceData.id, input.id));
+      await db.update(imcanRows)
+        .set({ rowData: input.fullData, searchText })
+        .where(eq(imcanRows.id, input.id));
       return { success: true };
     }),
     deleteReferenceData: adminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
       const { getDb } = await import("./db");
-      const { imcanReferenceData } = await import("../drizzle/schema");
+      const { imcanRows } = await import("../drizzle/schema");
       const { eq } = await import("drizzle-orm");
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
-      await db.delete(imcanReferenceData).where(eq(imcanReferenceData.id, input.id));
+      await db.delete(imcanRows).where(eq(imcanRows.id, input.id));
       return { success: true };
     }),
   }),

@@ -240,23 +240,26 @@ export const fileCellSources = pgView("file_cell_sources").as((qb) => {
   .innerJoin(uploadedFiles, sql`${fileCells.file_id} = ${uploadedFiles.id}`);
 });
 
-export const imcanReferenceData = pgTable("imcan_reference_data", {
+export const imcanSources = pgTable("imcan_sources", {
   id: serial("id").primaryKey(),
-  sheetName: text("sheet_name"),
-  rowIndex: integer("row_index"),
-  itemName: text("item_name"),
-  category: text("category"),
-  fullData: jsonb("full_data")
+  fileName: text("file_name"),
+  version: text("version"),
+  hash: text("hash")
 });
 
-export const imcanEucImages = pgTable("imcan_euc_images", {
+export const imcanSheets = pgTable("imcan_sheets", {
   id: serial("id").primaryKey(),
-  contentType: text("content_type"),
-  base64Data: text("base64_data")
+  sheetName: text("sheet_name").notNull(),
+  sheetOrder: integer("sheet_order"),
+  headers: jsonb("headers"),
+  rowCount: integer("row_count")
 });
 
-export const imcanEucData = pgTable("imcan_euc_data", {
+export const imcanRows = pgTable("imcan_rows", {
   id: serial("id").primaryKey(),
-  documentName: text("document_name"),
-  contentChunk: text("content_chunk")
+  sheetName: text("sheet_name").notNull(),
+  sourceRowNumber: integer("source_row_number"),
+  rowData: jsonb("row_data").notNull(),
+  searchText: text("search_text")
+  // Note: search_vector is a tsvector column in Postgres, which Drizzle accesses via raw SQL.
 });
