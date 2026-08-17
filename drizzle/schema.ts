@@ -257,9 +257,40 @@ export const imcanSheets = pgTable("imcan_sheets", {
 
 export const imcanRows = pgTable("imcan_rows", {
   id: serial("id").primaryKey(),
+  sourceId: integer("source_id"),
   sheetName: text("sheet_name").notNull(),
   sourceRowNumber: integer("source_row_number"),
   rowData: jsonb("row_data").notNull(),
   searchText: text("search_text")
   // Note: search_vector is a tsvector column in Postgres, which Drizzle accesses via raw SQL.
+});
+
+export const imcanDocuments = pgTable("imcan_documents", {
+  id: serial("id").primaryKey(),
+  fileName: text("file_name").notNull(),
+  version: text("version"),
+  hash: text("hash"),
+  createdAt: timestamp("created_at").defaultNow().notNull()
+});
+
+export const imcanDocumentItems = pgTable("imcan_document_items", {
+  id: serial("id").primaryKey(),
+  documentId: integer("document_id"),
+  itemType: text("item_type"),
+  position: integer("position"),
+  contentText: text("content_text"),
+  mediaTargets: jsonb("media_targets")
+  // Note: search_vector is a tsvector column in Postgres, which Drizzle accesses via raw SQL.
+});
+
+export const imcanDocumentAssets = pgTable("imcan_document_assets", {
+  id: serial("id").primaryKey(),
+  documentId: integer("document_id"),
+  assetName: text("asset_name").notNull(),
+  assetKind: text("asset_kind"), // image, embedded_binary, xml_metadata
+  mimeType: text("mime_type"),
+  sizeBytes: integer("size_bytes"),
+  sha256: text("sha256"),
+  cdnUrl: text("cdn_url"),
+  relatedItemPositions: jsonb("related_item_positions")
 });

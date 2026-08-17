@@ -7,6 +7,7 @@ import { registerMicrosoftOAuthRoutes } from "../microsoftOAuth";
 import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
+import { imcanRouter } from "../imcanApi";
 
 export async function createApp() {
   const app = express();
@@ -17,6 +18,8 @@ export async function createApp() {
   registerStorageProxy(app);
   registerOAuthRoutes(app);
   registerMicrosoftOAuthRoutes(app);
+  
+  app.use("/api/imcan", imcanRouter);
   
   app.get("/api/knowledge/debug/search", async (req, res) => {
     const drive_item_id = req.query.drive_item_id as string;
