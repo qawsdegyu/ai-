@@ -31,7 +31,7 @@ const menuItems = [
   { icon: LayoutDashboard, label: "Overview", path: "/" },
   { icon: Search, label: "Router Search", path: "/search" },
   { icon: MessageSquare, label: "AI Analytics", path: "/analytics" },
-
+  { icon: TableProperties, label: "Data Grid", path: "/editor" },
   { icon: Bot, label: "AI Assistant", path: "/assistant" },
   { icon: Settings2, label: "Admin Users", path: "/admin/users" },
 ];
