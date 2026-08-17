@@ -164,7 +164,7 @@ export const appRouter = router({
     ask: protectedProcedure.input(z.object({ question: z.string().min(2).max(1000), conversationId: z.number().int().positive().optional(), fileId: z.number().int().optional(), onedriveFileIds: z.array(z.string()).optional(), language: z.enum(["ar", "en"]).default("en") })).mutation(async ({ input, ctx }) => {
       const conversation = input.conversationId ? { id: input.conversationId } : await createConversation(ctx.user.id, input.question);
       await appendConversationMessage(ctx.user.id, conversation.id, "user", input.question);
-      const result = await answerInventoryQuestion({ ...input, currentUserId: ctx.user.id });
+      const result = await answerInventoryQuestion({ ...input, conversationId: conversation.id, currentUserId: ctx.user.id });
       await appendConversationMessage(ctx.user.id, conversation.id, "assistant", result.answer);
       return { ...result, conversationId: conversation.id };
     }),

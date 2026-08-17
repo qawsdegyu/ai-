@@ -74,7 +74,7 @@ export function formatAssistantResponse(answer: string, sources: Array<{ routerN
 }
 
 export type AssistantLanguage = "ar" | "en";
-type SearchInput = { question: string; language?: AssistantLanguage; fileId?: number };
+type SearchInput = { question: string; language?: AssistantLanguage; fileId?: number; conversationId?: number };
 
 export function buildInventoryContext(rows: any[]) {
   return rows.map((row) => ({
@@ -95,13 +95,36 @@ export function buildInventoryContext(rows: any[]) {
   }));
 }
 
-export async function answerInventoryQuestion({ question, language, fileId, currentUserId }: SearchInput & { currentUserId: number }) {
+export async function answerInventoryQuestion({ question, language, fileId, conversationId, currentUserId }: SearchInput & { currentUserId: number }) {
   const responseLanguage = detectAssistantLanguage(question, language);
-  const isEnglish = responseLanguage === "en";
+  const isEnglish = true; // FORCE STRONG ENGLISH RESPONSES
   let context: any[] = [];
   let rawFilesContext: any[] = [];
+  let conversationHistoryText = "";
+  let previousUserMessageText = "";
   let deterministicExcelAnswer: { answer: string; sources: any[]; metadata: any } | null = null;
   let debugInfo: any = { files_processed: [] };
+
+  if (conversationId) {
+    try {
+      const { getUserConversation } = await import("./aiHistory");
+      const pastChat = await getUserConversation(currentUserId, conversationId);
+      if (pastChat && pastChat.messages && pastChat.messages.length > 0) {
+         // Get the most recent user message before the current one to aid in DB search
+         const userMessages = [...pastChat.messages].filter((m: any) => m.role === 'user');
+         if (userMessages.length > 1) {
+             previousUserMessageText = userMessages[userMessages.length - 2].content;
+         }
+
+         // Limit to last 6 messages to keep context relevant and not overload the LLM
+         const recentMessages = pastChat.messages.slice(-6);
+         const historyStr = recentMessages.map((m: any) => `${m.role === 'user' ? 'Employee' : 'Assistant'}: ${m.content}`).join("\n\n");
+         conversationHistoryText = `\n\nPrevious Conversation Context (Use this to answer follow-up questions):\n${historyStr}`;
+      }
+    } catch (err) {
+      console.error("Failed to load conversation history", err);
+    }
+  }
 
   const oneDriveCache = (global as any).oneDriveCache || new Map<string, { eTag: string, parsedData: any[] }>();
   if (!(global as any).oneDriveCache) (global as any).oneDriveCache = oneDriveCache;
@@ -117,9 +140,9 @@ export async function answerInventoryQuestion({ question, language, fileId, curr
       // Restore Router Records database context
       const routerRows = await db.select().from(inventoryRecords);
       // We only include rows that match the keyword to save LLM context window
-      const searchKeywords = question.toLowerCase().split(" ").filter(w => w.length > 2);
+      const oldSearchKeywords = (question + " " + previousUserMessageText).toLowerCase().split(" ").filter(w => w.length > 2);
       const matchedRouterRows = routerRows.filter(row => 
-         searchKeywords.some(kw => 
+         oldSearchKeywords.some(kw => 
            row.routerName?.toLowerCase().includes(kw) || 
            row.oldRouterName?.toLowerCase().includes(kw) || 
            row.siteId?.toLowerCase().includes(kw)
@@ -458,9 +481,9 @@ export async function answerInventoryQuestion({ question, language, fileId, curr
         const { imcanRows } = await import("../drizzle/schema");
         const { ilike, or, sql: dsql } = await import("drizzle-orm");
         
-        // Clean user question: remove extra spaces
-        const cleanQuestion = question.replace(/\s+/g, " ").trim().toLowerCase();
-        const sqlSearchTerms = cleanQuestion.split(" ").filter(w => w.length > 2);
+        // Combine current question and previous user message to ensure router names from previous turns are caught
+        const combinedSearchText = (question + " " + previousUserMessageText).replace(/\s+/g, " ").trim().toLowerCase();
+        const sqlSearchTerms = combinedSearchText.split(" ").filter(w => w.length > 2);
         
         if (sqlSearchTerms.length > 0) {
           // Fallback exact matching for search_text or row_data values if tsvector doesn't trigger
@@ -475,8 +498,8 @@ export async function answerInventoryQuestion({ question, language, fileId, curr
           
           const searchCondition = or(searchVectorQuery, ...likeConditions);
           
-          // Fetch top 10 results directly from the backend
-          const results = await db.select().from(imcanRows).where(searchCondition).limit(10);
+          // Fetch up to 50 results directly from the backend to get all data
+          const results = await db.select().from(imcanRows).where(searchCondition).limit(50);
           
           if (results.length > 0) {
             rawFilesContext.push({
@@ -556,11 +579,12 @@ export async function answerInventoryQuestion({ question, language, fileId, curr
         content: `You are the internal Flight Deck AI Chatbot for IMCAN. Act as a knowledgeable assistant for the company.
 Rules:
 1. ONLY rely on the supplied 'Raw uploaded files context' (which comes from public.imcan_rows). NEVER invent or hallucinate any information not present in the results.
-2. If the answer is found, ALWAYS cite the exact source in this format: "{Sheet Name}، الصف {Row Number}" (e.g. "Inventory، الصف 42" or "Resolver Groups، الصف 8").
+2. If the answer is found, ALWAYS cite the exact source for each row in this format: "Sheet: {Sheet Name}, Row {Row Number}".
 3. If no sufficient result is found in the context, you MUST reply exactly with this phrase and nothing else: "لم أجد هذه المعلومة في بيانات IMCAN الحالية"
-4. Reply in Arabic if the question is Arabic, and English if English, but the missing data phrase must remain exact if applicable. Keep answers concise.`,
+4. ALWAYS reply in PURE, STRONG ENGLISH, regardless of the language of the user's question. (The ONLY exception is rule 3 where the exact Arabic phrase must be used if no data is found).
+5. ALWAYS format your answer as a clean, structured list of bullet points, bringing all the relevant data found in the context rows and displaying it clearly row by row.`,
       },
-      { role: "user", content: `Employee question:\n${question}\n\nRaw uploaded files context (Search Results from Database):\n${JSON.stringify(rawFilesContext, null, 2)}`       },
+      { role: "user", content: `Employee question:\n${question}\n\nRaw uploaded files context (Search Results from Database):\n${JSON.stringify(rawFilesContext, null, 2)}${conversationHistoryText}`       },
     ],
     });
   } catch (error: any) {
