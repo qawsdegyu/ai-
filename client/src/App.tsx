@@ -18,7 +18,7 @@ function Router() {
         <Route path={"/"} component={Home} />
         <Route path={"/search"} component={Home} />
         <Route path={"/analytics"} component={Home} />
-        <Route path={"/import"} component={Home} />
+
         <Route path={"/admin/users"} component={Home} />
         <Route path={"/assistant"} component={Home} />
         <Route path={"/editor"} component={Home} />

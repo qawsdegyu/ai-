@@ -31,7 +31,7 @@ const menuItems = [
   { icon: LayoutDashboard, label: "Overview", path: "/" },
   { icon: Search, label: "Router Search", path: "/search" },
   { icon: MessageSquare, label: "AI Analytics", path: "/analytics" },
-  { icon: Upload, label: "Import Center", path: "/import" },
+
   { icon: Bot, label: "AI Assistant", path: "/assistant" },
   { icon: Settings2, label: "Admin Users", path: "/admin/users" },
 ];
@@ -193,7 +193,7 @@ function DashboardLayoutContent({
           <SidebarContent className="min-h-0 flex-1 gap-0 overflow-y-auto border-t border-[#10283f]/70">
             <SidebarMenu className="px-2 py-1">
               {menuItems.map(item => {
-                if ((item.path === "/import" || item.path === "/admin/users" || item.path === "/editor" || item.path === "/analytics") && user?.role !== "admin") {
+                if ((item.path === "/admin/users" || item.path === "/editor" || item.path === "/analytics") && user?.role !== "admin") {
                   return null;
                 }
                 
