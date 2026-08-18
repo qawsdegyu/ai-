@@ -8,7 +8,7 @@ import {
   truncate,
   MAX_RESULTS,
 } from "./_core/contextBuilder";
-import { imcanRows, imcanSources } from "../drizzle/schema";
+import { imcanRows, imcanSources, imcanDocuments, imcanDocumentItems, imcanDocumentAssets } from "../drizzle/schema";
 import { and as drizzleAnd, eq as drizzleEq, ilike as drizzleIlike, or as drizzleOr } from "drizzle-orm";
 
 const NEW_INVENTORY_HASH = "5aad8e9ef455c77a708788d43cbb4e374aefca9044e6a0a0ea2333b917bc4ae0";
@@ -52,6 +52,40 @@ async function searchCurrentImcanRows(db: any, query: string, limit = 5): Promis
   return exactRows.length ? exactRows : mappedRows;
 }
 
+async function searchImcanDocuments(db: any, query: string, limit = 5): Promise<any[]> {
+  const terms = String(query).toLowerCase().trim().split(/\s+/).filter((term) => term.length > 2).slice(0, 8);
+  if (!terms.length) return [];
+  const conditions = terms.map((term) => drizzleIlike(imcanDocumentItems.contentText, `%${term}%`));
+  const items = await db.select({
+    documentId: imcanDocumentItems.documentId,
+    position: imcanDocumentItems.position,
+    itemType: imcanDocumentItems.itemType,
+    contentText: imcanDocumentItems.contentText,
+    mediaTargets: imcanDocumentItems.mediaTargets,
+    fileName: imcanDocuments.fileName,
+  })
+    .from(imcanDocumentItems)
+    .leftJoin(imcanDocuments, drizzleEq(imcanDocumentItems.documentId, imcanDocuments.id))
+    .where(drizzleOr(...conditions))
+    .limit(Math.min(limit, 5));
+  const assetsByDocument = new Map<number, any[]>();
+  for (const item of items) {
+    const documentId = Number(item.documentId);
+    if (!Number.isFinite(documentId) || assetsByDocument.has(documentId)) continue;
+    const assets = await db.select({ assetName: imcanDocumentAssets.assetName, assetKind: imcanDocumentAssets.assetKind, mimeType: imcanDocumentAssets.mimeType, cdnUrl: imcanDocumentAssets.cdnUrl, relatedItemPositions: imcanDocumentAssets.relatedItemPositions })
+      .from(imcanDocumentAssets)
+      .where(drizzleEq(imcanDocumentAssets.documentId, documentId))
+      .limit(18);
+    assetsByDocument.set(documentId, assets);
+  }
+  return items.map((item: any) => ({
+    fileName: item.fileName || "IMCANEUCSheet2024.docx",
+    content: `[Word item: ${item.itemType || "text"}] [Position: ${item.position ?? "?"}]\\n${String(item.contentText || "").slice(0, 6000)}`,
+    source: { filename: item.fileName || "IMCANEUCSheet2024.docx", item_type: item.itemType, position: item.position },
+    assets: (assetsByDocument.get(Number(item.documentId)) || []).filter((asset: any) => !asset.relatedItemPositions || JSON.stringify(asset.relatedItemPositions).includes(String(item.position ?? ""))),
+  }));
+}
+
 const REQUEST_TYPES = ["Network", "Incident", "LAN", "Request", "SITATEX"] as const;
 type RequestType = typeof REQUEST_TYPES[number];
 
@@ -78,13 +112,15 @@ function routerSpecificRecords(rows: any[]): string {
   return records.length ? records.join("\n") : "- No router-specific issue or service record was found in the inventory row.";
 }
 
-function buildServiceTemplate(requestType: RequestType, router: any): { text: string; source: any } {
+export function buildServiceTemplate(requestType: RequestType, router: any): { text: string; source: any } {
   const row = router?.source_row_number ?? "20";
-  const file = router?.source_file ?? "IMCAN-Reference-Sheet---2024-router-updated.xlsm";
+  const file = router?.source_file ?? "NewInventory.xlsx";
+  const templateFile = "IMCAN-Reference-Sheet---2024-router-updated.xlsm";
+  const templateRow = "20";
   const cleanCellText = (value: unknown, fallback = "Not available") => {
     const cleaned = String(value ?? "")
-      .replace(/\\\\n/g, "\n")
-      .replace(/\\\\5/g, "\n")
+      .replace(/\\n/g, "\n")
+      .replace(/\\+5/g, "\n")
       .replace(/\\r/g, "")
       .trim();
     return cleaned || fallback;
@@ -168,7 +204,18 @@ function buildServiceTemplate(requestType: RequestType, router: any): { text: st
     "{{backup_available}}": yesNo,
   };
   const text = templates[requestType].map(line => Object.entries(replacements).reduce((out, [key, value]) => out.replaceAll(key, value), line)).join("\n");
-  return { text, source: { filename: file, sheet: "Dashboard", row, service: requestType } };
+  return {
+    text,
+    source: {
+      filename: templateFile,
+      sheet: "Dashboard",
+      row: templateRow,
+      service: requestType,
+      data_filename: file,
+      data_sheet: router?.sheet_name ?? "Inventory",
+      data_row: row,
+    },
+  };
 }
 
 export function requestedLanguageLabel(language: AssistantLanguage) {
@@ -327,6 +374,20 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
 
   // Search the normalized IMCAN source first so current Versa Router names work.
   let currentImcanRows: any[] = [];
+  try {
+    const documentMatches = await searchImcanDocuments(db, q, 5);
+    for (const match of documentMatches) {
+      const assetLines = match.assets.map((asset: any) => `- Image/asset: ${asset.assetName}${asset.cdnUrl ? ` (${asset.cdnUrl})` : ""}`).join("\\n");
+      rawFilesContext.push({
+        fileName: match.fileName,
+        content: `${match.content}${assetLines ? `\\n${assetLines}` : ""}`,
+        source: match.source,
+        assets: match.assets,
+      });
+    }
+  } catch (error) {
+    console.error("IMCAN Word/document search failed", error);
+  }
   try {
     const identifiers = `${q} ${conversationUserText}`.match(/\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/gi) ?? [];
     const currentSearchQuery = Array.from(new Set(identifiers.map((value) => value.toUpperCase()))).join(" ") || question;
@@ -812,7 +873,7 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
   if (currentImcanRows.length && targetInConversation && requestType && !issueGiven && !technicalDirectQuestion) {
     const serviceTemplate = buildServiceTemplate(requestType, currentImcanRows[0]);
     return {
-      answer: `Request type selected: ${requestType}.\\n\\nPlease use or complete this service template from the IMCAN workbook:\\n\\n${serviceTemplate.text}\\n\\nSource: File ${serviceTemplate.source.filename}, Sheet ${serviceTemplate.source.sheet}, Row ${serviceTemplate.source.row}.\\n\\nPlease describe the problem or request for this router.`,
+      answer: `Request type selected: ${requestType}.\n\nPlease use or complete this service template from the IMCAN workbook:\n\n${serviceTemplate.text}\n\nTemplate source: File ${serviceTemplate.source.filename}, Sheet ${serviceTemplate.source.sheet}, Row ${serviceTemplate.source.row}.\nRouter data source: File ${serviceTemplate.source.data_filename}, Sheet ${serviceTemplate.source.data_sheet}, Row ${serviceTemplate.source.data_row}.\n\nPlease describe the problem or request for this router.`,
       sources: currentImcanRows.slice(0, 3),
       metadata: { stage: "waiting_for_issue", language: "en", request_type: requestType, template_source: serviceTemplate.source },
       debug: debugInfo,
@@ -822,7 +883,7 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
   if (deterministicExcelAnswer) {
     if (requestType && currentImcanRows.length) {
       const serviceTemplate = buildServiceTemplate(requestType, currentImcanRows[0]);
-      deterministicExcelAnswer.answer = `${deterministicExcelAnswer.answer}\n\n**${requestType} Service Template**\n${serviceTemplate.text}\n\n**Template source:** File ${serviceTemplate.source.filename}, Sheet ${serviceTemplate.source.sheet}, Row ${serviceTemplate.source.row}.`;
+      deterministicExcelAnswer.answer = `${deterministicExcelAnswer.answer}\n\n**${requestType} Service Template**\n${serviceTemplate.text}\n\n**Template source:** File ${serviceTemplate.source.filename}, Sheet ${serviceTemplate.source.sheet}, Row ${serviceTemplate.source.row}.\n**Router data source:** File ${serviceTemplate.source.data_filename}, Sheet ${serviceTemplate.source.data_sheet}, Row ${serviceTemplate.source.data_row}.`;
       deterministicExcelAnswer.metadata = { ...deterministicExcelAnswer.metadata, request_type: requestType, template_source: serviceTemplate.source };
     }
     return { ...deterministicExcelAnswer, debug: debugInfo };

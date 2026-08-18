@@ -65,8 +65,10 @@ export interface CompactResult {
   circuit?: string;
   status?: string;
   remarks?: string;
+  full_site_address?: string;
   contact_details?: string;
   operational_hours?: string;
+  content?: string;
   source_score?: number;
 }
 
@@ -94,6 +96,9 @@ export function toCompactResult(
     country: truncate(row.country ?? row.row_data?.["Country"], 80),
     city: truncate(row.city ?? row.row_data?.["City"], 80),
     site_id: truncate(row.site_id ?? row.siteId ?? row.row_data?.["Site ID"] ?? row.row_data?.["SITE ID"], 80),
+    full_site_address: truncate(row.full_site_address ?? row.location ?? row.row_data?.["Full Site Address"], 1200),
+    remarks: truncate(row.remarks ?? row.row_data?.["Remarks"] ?? row.row_data?.["Site Important Remarks"], 1500),
+    content: truncate(row._raw ?? row.content, 4000),
     source_score: typeof row.score === "number" ? Math.round(row.score * 100) / 100 : undefined,
   };
 
@@ -172,6 +177,9 @@ export function buildContext(
       city: r.city,
       site_id: r.site_id,
       summary: r.summary ? r.summary.slice(0, 500) : undefined,
+      remarks: r.remarks ? r.remarks.slice(0, 500) : undefined,
+      full_site_address: r.full_site_address ? r.full_site_address.slice(0, 800) : undefined,
+      content: r.content ? r.content.slice(0, 3000) : undefined,
       source_score: r.source_score,
     }));
     contextJson = JSON.stringify({ question: payload.question, history_summary: payload.history_summary, results: reduced });

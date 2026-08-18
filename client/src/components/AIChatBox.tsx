@@ -130,7 +130,7 @@ export function AIChatBox({
   // Filter out system messages and normalize escaped line breaks returned by older conversations.
   const displayMessages = messages
     .filter((msg) => msg.role !== "system")
-    .map((msg) => ({ ...msg, content: String(msg.content ?? "").replace(/\\\\n/g, "\n").replace(/\\\\t/g, "\t") }));
+    .map((msg) => ({ ...msg, content: String(msg.content ?? "").replace(/\\n/g, "\n").replace(/\\t/g, "\t") }));
 
   // Calculate min-height for last assistant message to push user message to top
   const [minHeightForLastMessage, setMinHeightForLastMessage] = useState(0);
