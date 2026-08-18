@@ -36,6 +36,8 @@ async function searchCurrentImcanRows(db: any, query: string, limit = 5): Promis
     city: row.rowData?.city ?? row.rowData?.City,
     site_id: row.rowData?.site_id ?? row.rowData?.["SITE ID"] ?? row.rowData?.["Site ID"],
     summary: row.rowData?.summary ?? row.rowData?.Summary,
+    remarks: row.rowData?.remarks ?? row.rowData?.Remarks ?? row.rowData?.["Site Important Remarks"],
+    full_site_address: row.rowData?.full_site_address ?? row.rowData?.location ?? row.rowData?.["Full Site Address"],
     subnet: row.rowData?.subnet_ip ?? row.rowData?.["Subnet IP"] ?? row.rowData?.subnet,
     circuit: row.rowData?.["Circuit Managed"] ?? row.rowData?.["Circuit Type"] ?? row.rowData?.circuit,
     status: row.rowData?.mcs_status ?? row.rowData?.["MCS Status"] ?? row.rowData?.status,
@@ -45,17 +47,30 @@ async function searchCurrentImcanRows(db: any, query: string, limit = 5): Promis
   }));
 }
 
-const REQUEST_TYPES = ["Network", "Incident", "LAN", "Request", "Syntax"] as const;
+const REQUEST_TYPES = ["Network", "Incident", "LAN", "Request", "SITATEX"] as const;
 type RequestType = typeof REQUEST_TYPES[number];
 
 function extractRequestType(text: string): RequestType | null {
-  const match = String(text).match(/\b(network|incident|lan|request|syntax)\b/i);
+  const match = String(text).match(/\b(network|incident|lan|request|sitatex)\b/i);
   if (!match) return null;
   return REQUEST_TYPES.find((type) => type.toLowerCase() === match[1].toLowerCase()) ?? null;
 }
 
 function requestTypeQuestion(): string {
-  return "Which request type applies to this router? Please choose one: Network, Incident, LAN, Request, or Syntax.";
+  return "Which service template do you need for this router? Please choose one: Network, Incident, LAN, Request, or SITATEX.";
+}
+
+function routerSpecificRecords(rows: any[]): string {
+  const records = rows.flatMap((row: any) => {
+    const facts = [
+      ["Service / Summary", row.summary],
+      ["Router-specific remarks", row.remarks],
+      ["Circuit managed", row.circuit],
+      ["MCS status", row.status],
+    ].filter(([, value]) => String(value ?? "").trim() && String(value).trim().toLowerCase() !== "na");
+    return facts.map(([label, value]) => `- **${label}:** ${String(value).trim()}\n  - Source: ${row.source_file}, Sheet ${row.sheet_name}, Row ${row.source_row_number}`);
+  });
+  return records.length ? records.join("\n") : "- No router-specific issue or service record was found in the inventory row.";
 }
 
 function buildServiceTemplate(requestType: RequestType, router: any): { text: string; source: any } {
@@ -106,7 +121,7 @@ function buildServiceTemplate(requestType: RequestType, router: any): { text: st
       "Local hours of operation: {{operational_hours}}", "Full site address: {{site_address}}", "",
       "Asset tag of Equipment:", "Make and Model: NA", "IP address: NA", "PRN/Username: NA", "", "Request Description:"
     ],
-    Syntax: [
+    SITATEX: [
       "Contact Name:", "Contact Number:", "Contact Email:", "", "TW: ASAP", "", "Alternative NA", "",
       "Local hours of operation: {{operational_hours}}", "Full site address: {{site_address}}", "",
       "Workstation Asset Tag:", "SITATEX address or 7 letter codes:", "SITATEX Version:",
@@ -294,7 +309,7 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
 
   // The Dashboard service selector is backed by the template formula in Dashboard row 20.
   // Keep the exact service fields in the retrieved context so the model cannot replace them
-  // with a generic answer. Syntax follows the workbook's SITATEX template.
+  // with a generic answer. SITATEX follows the workbook's SITATEX template.
   if (requestType && currentImcanRows.length) {
     const serviceTemplate = buildServiceTemplate(requestType, currentImcanRows[0]);
     rawFilesContext.push({
@@ -756,11 +771,11 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
      };
   }
 
-  if (currentImcanRows.length && targetInConversation && !requestType) {
+  if (currentImcanRows.length && targetInConversation && !requestType && !issueGiven && !technicalDirectQuestion) {
     return {
-      answer: requestTypeQuestion(),
+      answer: `I found this router and its router-specific records:\n\n${routerSpecificRecords(currentImcanRows)}\n\n${requestTypeQuestion()}`,
       sources: currentImcanRows.slice(0, 3),
-      metadata: { stage: "waiting_for_request_type", language: "en", request_types: REQUEST_TYPES },
+      metadata: { stage: "showing_router_specific_records", language: "en", request_types: REQUEST_TYPES },
       debug: debugInfo,
     };
   }
