@@ -13,7 +13,7 @@ export function requestedLanguageLabel(language: AssistantLanguage) {
   return language === "ar" ? "Arabic" : "English";
 }
 
-export const NO_RESULTS_ANSWER = "لم أجد أي معلومات مطابقة في ملفات المخزون المتاحة.";
+export const NO_RESULTS_ANSWER = "I could not find any matching information in the available IMCAN sources.";
 export const NO_RESULTS_ANSWER_EN = "I could not find any matching information in the available inventory files.";
 
 export function detectAssistantLanguage(question: string, requestedLanguage?: AssistantLanguage): AssistantLanguage {
@@ -25,9 +25,9 @@ export function detectAssistantLanguage(question: string, requestedLanguage?: As
   return requestedLanguage || "en";
 }
 
-export function noResultsAnswer(question: string = "") {
-  const isArabic = question.trim() === "" || /[\u0600-\u06FF]/.test(question);
-  return { answer: formatAssistantResponse(isArabic ? NO_RESULTS_ANSWER : NO_RESULTS_ANSWER_EN, []), sources: [] };
+export function noResultsAnswer(_question: string = "") {
+  const isArabic = false;
+  return { answer: formatAssistantResponse(NO_RESULTS_ANSWER_EN, []), sources: [] };
 }
 
 export function normalizeAssistantText(value: unknown): string {
@@ -78,8 +78,8 @@ export function buildAssistantCellRoute(input: { filename?: string | null; sheet
 export function formatAssistantResponse(answer: string, sources: Array<{ routerName: string; siteId: string; migrationStatus: string }>) {
   const cleanAnswer = normalizeAssistantText(answer);
   if (!sources.length) return cleanAnswer;
-  const sourceLines = sources.map(source => `- **Router Name:** ${source.routerName || "غير متوفر"}\n- **Site ID:** ${source.siteId || "غير متوفر"}`).join("\n\n");
-  return `${cleanAnswer}\n\n**المصدر**\n${sourceLines}`;
+  const sourceLines = sources.map(source => `- **Current Versa Router Name:** ${source.routerName || "Not available"}\n- **Site ID:** ${source.siteId || "Not available"}`).join("\n\n");
+  return `${cleanAnswer}\n\n**Source**\n${sourceLines}`;
 }
 
 export type AssistantLanguage = "ar" | "en";
@@ -105,14 +105,28 @@ export function buildInventoryContext(rows: any[]) {
 }
 
 export async function answerInventoryQuestion({ question, language, fileId, conversationId, currentUserId }: SearchInput & { currentUserId: number }) {
-  const responseLanguage = detectAssistantLanguage(question, language);
+  const responseLanguage = "en" as const;
   const isEnglish = true; // FORCE STRONG ENGLISH RESPONSES
   let context: any[] = [];
   let rawFilesContext: any[] = [];
   let conversationHistoryText = "";
   let previousUserMessageText = "";
   let deterministicExcelAnswer: { answer: string; sources: any[]; metadata: any } | null = null;
-  let debugInfo: any = { files_processed: [] };
+  const debugInfo: any = { files_processed: [] };
+
+  // Clarify vague operational complaints without querying the whole database.
+  const q = String(question).trim();
+  const hasTarget = /\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6}|site\s*id|airport|hostname|subnet|circuit)\b/i.test(q);
+  const generalProblem = /^(?:i\s+have|the|there(?:'s| is)|we\s+have|need)\b.*\b(?:router|network|internet|connectivity|vpn|link|circuit|switch|printer|problem|issue|outage|down|not\s+responding)\b/i.test(q);
+  const technicalDirectQuestion = /\b(?:printer|firmware|printerset|vcom|usb|xml|amadeus|atb|btp|configure|configuration|driver|scc|resolver|escalation|dns)\b/i.test(q);
+  if (generalProblem && !hasTarget && !technicalDirectQuestion) {
+    return {
+      answer: "Which site, airport, router, or site ID should I search for?",
+      sources: [],
+      metadata: { stage: "waiting_for_target", language: "en" },
+      debug: debugInfo,
+    };
+  }
 
   if (conversationId) {
     try {
@@ -587,7 +601,7 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
      }, null, 2);
      
      return {
-        answer: "حدث خطأ أثناء استعلام قاعدة البيانات. لم أعرض نتيجة غير متحققة. يرجى إعادة المحاولة بعد لحظات.",
+        answer: "I could not query the database at the moment. No unverified result was displayed. Please try again shortly.",
         sources: [],
         metadata: null,
         debug: null
@@ -604,13 +618,13 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
 
   // ── TOKEN SAFETY GATE ──────────────────────────────────────────────────────
   // Estimate total payload tokens before calling LLM.
-  const systemPromptText = `You are the internal Flight Deck AI Chatbot for IMCAN. Act as a knowledgeable assistant for the company.
+  const systemPromptText = `You are an English-only IMCAN Support Data Assistant.
 Rules:
-1. ONLY rely on the supplied 'Raw uploaded files context' (which comes from public.imcan_rows). NEVER invent or hallucinate any information not present in the results.
-2. If the answer is found, ALWAYS cite the exact source for each row in this format: "Sheet: {Sheet Name}, Row {Row Number}".
-3. If no sufficient result is found in the context, you MUST reply exactly with this phrase and nothing else: "لم أجد هذه المعلومة في بيانات IMCAN الحالية"
-4. ALWAYS reply in PURE, STRONG ENGLISH, regardless of the language of the user's question. (The ONLY exception is rule 3 where the exact Arabic phrase must be used if no data is found).
-5. ALWAYS format your answer as a clean, structured list of bullet points, bringing all the relevant data found in the context rows and displaying it clearly row by row.`;
+1. Use only the supplied compact retrieved context. Never invent or hallucinate information.
+2. Cite the exact source for every factual answer: file, sheet, and row or document position.
+3. If the context does not contain the answer, reply exactly: "I could not find a matching record in the available IMCAN sources."
+4. Always reply in English, even when the user writes in another language.
+5. Use concise structured bullet points. Never display FALSE, null, undefined, raw JSON, or old router descriptions unless explicitly requested.`;
 
   // Build compact context using the context builder
   const { contextJson, estimatedTokens: ctxTokens, wasTruncated } = buildContext(
@@ -622,15 +636,13 @@ Rules:
     question
   );
 
-  const rawContextText = rawFilesContext.map((fc: any) => fc.content).join("\n\n");
-  // Use whichever is smaller: the structured compact JSON or the raw text
-  const contextForLLM =
-    rawContextText.length / 4 < ctxTokens ? rawContextText : contextJson;
+  // Always use bounded structured context. Never send raw file chunks to the LLM.
+  const contextForLLM = contextJson;
 
   const totalEstimatedTokens =
     estimateTokens(systemPromptText) +
     estimateTokens(question) +
-    estimateTokens(conversationHistoryText) +
+    estimateTokens(conversationHistoryText.slice(0, 1500)) +
     estimateTokens(contextForLLM) +
     4_000; // reserved for answer
 
@@ -694,7 +706,7 @@ Rules:
     console.error("AI query failed:", error);
     const safeMessage = String(error?.message ?? "تعذر الاتصال بخدمة التحليل").slice(0, 240);
     return {
-      answer: `تعذر تحليل السؤال حاليًا بسبب خطأ في خدمة الذكاء الاصطناعي: ${safeMessage}. تم العثور على بيانات مصدرية، لكن لن أعرض استنتاجًا غير متحقق منه. يرجى إعادة المحاولة بعد لحظات.`,
+      answer: `The AI service is temporarily unavailable: ${safeMessage}. Verified source data was found, but no unverified conclusion was displayed. Please try again shortly.`,
       sources: [],
       metadata: { error: "llm_unavailable", extracted_files: rawFilesContext.map((file: any) => file.fileName) },
       debug: debugInfo,

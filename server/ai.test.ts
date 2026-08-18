@@ -26,8 +26,8 @@ describe("inventory AI assistant", () => {
   it("formats a successful answer with matched Router Name and Site ID sources", () => {
     const result = formatAssistantResponse("Router R1 is migrated.", [{ routerName: "R1", siteId: "S1", migrationStatus: "Migrated" }]);
     expect(result).toContain("Router R1 is migrated.");
-    expect(result).toContain("**المصدر**");
-    expect(result).toContain("**Router Name:** R1");
+    expect(result).toContain("**Source**");
+    expect(result).toContain("**Current Versa Router Name:** R1");
     expect(result).toContain("**Site ID:** S1");
   });
 
@@ -41,7 +41,7 @@ describe("inventory AI assistant", () => {
   it("returns a safe no-result answer without calling the LLM", async () => {
     const result = noResultsAnswer();
     expect(result.sources).toEqual([]);
-    expect(result.answer).toContain("لم أجد");
+    expect(result.answer).toContain("I could not find");
     expect(noResultsAnswer("en").answer).toContain("I could not find");
     expect(requestedLanguageLabel("ar")).toBe("Arabic");
     expect(requestedLanguageLabel("en")).toBe("English");
