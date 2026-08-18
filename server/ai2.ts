@@ -98,6 +98,15 @@ async function searchImcanDocuments(db: any, query: string, limit = 5): Promise<
   }));
 }
 
+function buildWordProcedureAnswer(matches: any[], question: string) {
+  const wantsImage = /image|picture|photo|screenshot|display|show|visual/i.test(question);
+  const uniqueItems = Array.from(new Map(matches.map((match: any) => [`${match.fileName}:${match.source?.position}`, match])).values()).slice(0, 8);
+  const procedureLines = uniqueItems.map((match: any) => `- ${String(match.content || "").replace(/^\[Word item:[^\]]+\] \[Position:[^\]]+\]\n?/, "").trim()}\n  - Source: File ${match.source?.filename || match.fileName}, document position ${match.source?.position ?? "?"}`).join("\n");
+  const imageMatches = uniqueItems.flatMap((match: any) => match.assets || []).filter((asset: any) => asset.cdnUrl && /\\.(png|jpe?g|gif|emf|wmf|svg)(?:\\?|$)/i.test(String(asset.assetName || asset.cdnUrl))).filter((asset: any, index: number, arr: any[]) => arr.findIndex((candidate: any) => candidate.assetName === asset.assetName) === index).slice(0, wantsImage ? 5 : 0);
+  const imageLines = imageMatches.map((asset: any) => `![${asset.assetName}](${asset.cdnUrl})`).join("\n\n");
+  return `**Verified procedure from IMCAN Word document**\n\n${procedureLines || "I could not find a matching procedure in the document."}${imageLines ? `\n\n**Related image(s)**\n\n${imageLines}` : ""}\n\n**Source**\n- File: IMCANEUCSheet2024.docx\n- Document positions: ${uniqueItems.map((match: any) => match.source?.position).filter(Boolean).join(", ") || "Not available"}`;
+}
+
 const REQUEST_TYPES = ["Network", "Incident", "LAN", "Request", "SITATEX"] as const;
 type RequestType = typeof REQUEST_TYPES[number];
 
@@ -386,8 +395,9 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
 
   // Search the normalized IMCAN source first so current Versa Router names work.
   let currentImcanRows: any[] = [];
+  let documentMatches: any[] = [];
   try {
-    const documentMatches = await searchImcanDocuments(db, q, 5);
+    documentMatches = await searchImcanDocuments(db, q, 5);
     for (const match of documentMatches) {
       const assetLines = match.assets.map((asset: any) => `- Image/asset: ${asset.assetName}${asset.cdnUrl ? ` (${asset.cdnUrl})` : ""}`).join("\n");
       rawFilesContext.push({
@@ -399,6 +409,14 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
     }
   } catch (error) {
     console.error("IMCAN Word/document search failed", error);
+  }
+  if (documentMatches.length && technicalDirectQuestion && !targetInConversation && !requestType) {
+    return {
+      answer: buildWordProcedureAnswer(documentMatches, q),
+      sources: documentMatches.map((match: any) => match.source),
+      metadata: { stage: "verified_word_procedure", language: "en", document: "IMCANEUCSheet2024.docx", positions: documentMatches.map((match: any) => match.source?.position).filter(Boolean) },
+      debug: debugInfo,
+    };
   }
   try {
     const identifiers = `${q} ${conversationUserText}`.match(/\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/gi) ?? [];
