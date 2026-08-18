@@ -359,6 +359,62 @@ export function buildInventoryContext(rows: any[]) {
   }));
 }
 
+const GROUNDED_ANSWER_SCHEMA = {
+  name: "GroundedIMCANAnswer",
+  strict: true,
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      answer: { type: "string" },
+      found: { type: "boolean" },
+      source: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          source_file: { type: ["string", "null"] },
+          sheet_name: { type: ["string", "null"] },
+          source_row_number: { type: ["number", "null"] },
+          router_name: { type: ["string", "null"] },
+          site_id: { type: ["string", "null"] },
+          evidence: { type: ["string", "null"] }
+        },
+        required: ["source_file", "sheet_name", "source_row_number", "router_name", "site_id", "evidence"]
+      }
+    },
+    required: ["answer", "found", "source"]
+  }
+} as const;
+
+export function sourceMatchesRetrievedContext(source: any, contextJson: string, rawFilesContext: any[]): boolean {
+  if (!source || source.source_file == null || !String(source.evidence ?? "").trim()) return false;
+  const filename = String(source.source_file).trim();
+  const matchedRawFile = rawFilesContext.find(file => String(file.fileName ?? "").trim() === filename);
+  if (matchedRawFile) {
+    const evidence = String(source.evidence).trim().toLowerCase();
+    const fileContent = String(matchedRawFile.content ?? "").toLowerCase();
+    return evidence.length >= 3 && fileContent.includes(evidence.slice(0, 160));
+  }
+  if (source.router_name == null && source.site_id == null) return false;
+  try {
+    const parsed = JSON.parse(contextJson);
+    const rows = Array.isArray(parsed?.results) ? parsed.results : [];
+    return rows.some((row: any) => {
+      const sameFile = String(row.source_file ?? "").trim() === filename;
+      const sameSheet = source.sheet_name == null || String(row.sheet_name ?? "").trim() === String(source.sheet_name).trim();
+      const sameRow = source.source_row_number == null || Number(row.source_row_number) === Number(source.source_row_number);
+      const sameRouter = source.router_name == null || String(row.current_versa_router_name ?? "").trim().toLowerCase() === String(source.router_name).trim().toLowerCase();
+      const sameSite = source.site_id == null || String(row.site_id ?? "").trim().toLowerCase() === String(source.site_id).trim().toLowerCase();
+      const evidence = String(source.evidence ?? "").trim().toLowerCase();
+      const rowText = JSON.stringify(row).toLowerCase();
+      const evidencePresent = rowText.includes(evidence) || evidence === String(source.router_name ?? "").trim().toLowerCase() || evidence === String(source.site_id ?? "").trim().toLowerCase();
+      return sameFile && sameSheet && sameRow && sameRouter && sameSite && evidencePresent;
+    });
+  } catch {
+    return false;
+  }
+}
+
 export async function answerInventoryQuestion({ question, language, fileId, conversationId, currentUserId }: SearchInput & { currentUserId: number }) {
   const responseLanguage = "en" as const;
   const isEnglish = true; // FORCE STRONG ENGLISH RESPONSES
@@ -950,13 +1006,17 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
 
   // ── TOKEN SAFETY GATE ──────────────────────────────────────────────────────
   // Estimate total payload tokens before calling LLM.
-  const systemPromptText = `You are an English-only IMCAN Support Data Assistant.
+  const systemPromptText = `You are the IMCAN Grounded Support Data Assistant.
+You may use ONLY the retrieved internal IMCAN context included in this request. The context is the sole authority.
 Rules:
-1. Use only the supplied compact retrieved context. Never invent or hallucinate information.
-2. Cite the exact source for every factual answer: file, sheet, and row or document position.
-3. If the context does not contain the answer, reply exactly: "I could not find a matching record in the available IMCAN sources."
-4. Always reply in English, even when the user writes in another language.
-5. Use concise structured bullet points. Never display FALSE, null, undefined, raw JSON, or old router descriptions unless explicitly requested.`;
+1. Never use general knowledge, web knowledge, memory, assumptions, or information not present in the retrieved context.
+2. Never combine fields from different Router records. Use one matching source record unless the employee explicitly asks for a comparison.
+3. Do not infer, calculate, repair, translate, or complete missing values. Preserve internal values exactly after basic whitespace cleanup.
+4. If a requested field is absent, write "Not available in the retrieved IMCAN record". If the answer is not supported by the context, set found=false and use exactly: "I could not find a matching record in the available IMCAN sources."
+5. Every factual answer must be tied to source_file, sheet_name, source_row_number, router_name, site_id, and a short evidence value copied from the context.
+6. Return JSON matching the GroundedIMCANAnswer schema. Do not return Markdown fences or extra keys.
+7. Always write the answer in English. Use concise labeled lines and service-template fields only when requested.
+8. Never display raw JSON, FALSE, null, undefined, old router descriptions, or external text.`;
 
   // Build compact context using the context builder
   const { contextJson, estimatedTokens: ctxTokens, wasTruncated } = buildContext(
@@ -997,7 +1057,8 @@ Rules:
   try {
     response = await invokeLLM({
     model: "openai/gpt-4o", 
-      outputSchema: undefined as any, /*
+      outputSchema: GROUNDED_ANSWER_SCHEMA,
+      /*
       name: "AnswerWithCitation",
       schema: {
         type: "object",
@@ -1060,22 +1121,22 @@ Rules:
     }
   }
 
-  if (parsedContent && parsedContent.answer && parsedContent.source) {
+  if (parsedContent && typeof parsedContent.answer === "string" && parsedContent.source) {
     const s = parsedContent.source;
+    const isNotFound = parsedContent.found === false || parsedContent.answer === NO_RESULTS_ANSWER_EN;
+    if (isNotFound) {
+      return { answer: noResultsAnswer(question).answer, sources: [], metadata: { grounded: false }, debug: debugInfo };
+    }
+    const hasVerifiedSource = sourceMatchesRetrievedContext(s, contextForLLM, rawFilesContext);
+    if (!hasVerifiedSource) {
+      return { answer: noResultsAnswer(question).answer, sources: [], metadata: { error: "unverified_model_answer", model_output: parsedContent }, debug: debugInfo };
+    }
     
     let sourceText = "";
-    const isNotFound = parsedContent.answer.includes("لم أجد") || (!s.filename && !s.router_name);
-    
     if (!isNotFound) {
-      if (s.source_type === "excel" && s.filename) {
-        const matchedContext = rawFilesContext.find(ctx => ctx.fileName === s.filename);
-        const googleDriveLink = (matchedContext as any)?.googleDriveUrl;
-        sourceText = isEnglish
-          ? `\n\n---\n**Company source record**\n- File: ${s.filename}\n- Sheet: ${s.sheet || "?"}\n- Cell/range: ${s.cell || "?"}\n- Original text from the cell: ${s.raw_value || "?"}${googleDriveLink ? `\n- [Open in Google Drive](${googleDriveLink})` : ""}`
-          : `\n\n---\n**سجل مصدر الشركة**\n- الملف: ${s.filename}\n- الورقة: ${s.sheet || "?"}\n- الخلية/النطاق: ${s.cell || "?"}\n- النص الأصلي من الخلية: ${s.raw_value || "?"}${googleDriveLink ? `\n- [فتح في Google Drive](${googleDriveLink})` : ""}`;
-        if (matchedContext?.lastModifiedDateTime) sourceText += isEnglish ? `\n- Last modified: ${new Date(matchedContext.lastModifiedDateTime).toLocaleString()}` : `\n- آخر تعديل: ${new Date(matchedContext.lastModifiedDateTime).toLocaleString()}`;
-        if (s.file_hash) sourceText += isEnglish ? `\n- Version: \`${s.file_hash}\`` : `\n- الإصدار: \`${s.file_hash}\``;
-      }
+      const matchedContext = rawFilesContext.find(ctx => ctx.fileName === s.source_file);
+      const googleDriveLink = (matchedContext as any)?.googleDriveUrl;
+      sourceText = `\n\n**Verified internal source**\n- File: ${s.source_file || "Not available"}\n- Sheet: ${s.sheet_name || "Not available"}\n- Row: ${s.source_row_number ?? "Not available"}\n- Router: ${s.router_name || "Not available"}\n- Site ID: ${s.site_id || "Not available"}\n- Evidence: ${s.evidence || "Not available"}${googleDriveLink ? `\n- [Open internal source](${googleDriveLink})` : ""}`;
     }
     
     return {
@@ -1086,6 +1147,5 @@ Rules:
     };
   }
 
-  const answer = normalizeAssistantText(typeof content === "string" ? content : "تعذر إنشاء إجابة نصية من السجلات الحالية.");
-  return { answer, sources: [], metadata: null, debug: debugInfo };
+  return { answer: noResultsAnswer(question).answer, sources: [], metadata: { error: "unstructured_model_answer" }, debug: debugInfo };
 }

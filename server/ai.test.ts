@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildInventoryContext, buildServiceTemplate, detectAssistantLanguage, formatAssistantResponse, noResultsAnswer, normalizeAssistantText, requestedLanguageLabel } from "./ai2";
+import { buildInventoryContext, buildServiceTemplate, detectAssistantLanguage, formatAssistantResponse, noResultsAnswer, normalizeAssistantText, requestedLanguageLabel, sourceMatchesRetrievedContext } from "./ai2";
 import { buildContext } from "./_core/contextBuilder";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
@@ -73,6 +73,13 @@ describe("inventory AI assistant", () => {
       for (const field of fields) expect(result.text).toContain(field);
       expect(result.text).not.toContain("\\\\n");
     }
+  });
+
+  it("rejects an answer whose source evidence is not present in retrieved internal context", () => {
+    const context = JSON.stringify({ results: [{ source_file: "NewInventory.xlsx", sheet_name: "Inventory", source_row_number: 3, current_versa_router_name: "VAPAMM001", site_id: "PAMM315" }] });
+    expect(sourceMatchesRetrievedContext({ source_file: "NewInventory.xlsx", router_name: "VAPAMM001", site_id: "PAMM315", evidence: "not present" }, context, [])).toBe(false);
+    expect(sourceMatchesRetrievedContext({ source_file: "NewInventory.xlsx", router_name: "VAPAMM001", site_id: "PAMM315", evidence: "VAPAMM001" }, context, [])).toBe(true);
+    expect(sourceMatchesRetrievedContext({ source_file: "Other.xlsx", router_name: "VAPAMM001", site_id: "PAMM315", evidence: "VAPAMM001" }, context, [])).toBe(false);
   });
 
   it("uses the language of the question when detecting response language", () => {
