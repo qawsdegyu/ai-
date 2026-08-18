@@ -37,9 +37,9 @@ describe("inventory AI assistant", () => {
       row_data: { mcs_pair: "Yes" },
       status: "Primary",
     });
-    expect(result.text).toContain("New SD-WAN Connection");
+    expect(result.text).not.toContain("New SD-WAN Connection");
     expect(result.text).toContain("Full site address: Queen Alia Airport, Amman");
-    expect(result.text).toContain("Contact details:");
+    expect(result.text).toContain("Contact details:\n- Contact Name: Ahmed");
     expect(result.text).toContain("MCS Site: Y");
     expect(result.text).toContain("Backup Available: Y");
     expect(result.text).toContain("Router LEDs status:");

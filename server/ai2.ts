@@ -157,9 +157,14 @@ export function buildServiceTemplate(requestType: RequestType, router: any): { t
   const templateRow = "20";
   const cleanCellText = (value: unknown, fallback = "Not available") => {
     const cleaned = String(value ?? "")
+      .replace(/^\s*["']|["']\s*$/g, "")
       .replace(/\\n/g, "\n")
       .replace(/\\+5/g, "\n")
       .replace(/\\r/g, "")
+      .split("\n")
+      .map(line => line.trim())
+      .filter(Boolean)
+      .join("\n")
       .trim();
     return cleaned || fallback;
   };
@@ -167,13 +172,15 @@ export function buildServiceTemplate(requestType: RequestType, router: any): { t
   const siteId = cleanCellText(router?.site_id, "Not available");
   const location = cleanCellText(router?.full_site_address || router?.row_data?.location || router?.row_data?.full_site_address, [router?.country, router?.city].filter(Boolean).join(" / ") || "Not available");
   const contact = cleanCellText(router?.contact_details || router?.row_data?.contact_details);
+  const contactBlock = contact === "Not available" ? contact : contact.split("\n").map(line => `- ${line}`).join("\n");
   const hours = cleanCellText(router?.operational_hours || router?.row_data?.operational_hours);
   const serviceSummary = cleanCellText(router?.remarks || router?.row_data?.remarks, "IMCAN service request");
   const mcsPair = cleanCellText(router?.row_data?.mcs_pair || router?.row_data?.["MCS Pair"], "Not available");
   const yesNo = /^(yes|y|true|primary)$/i.test(mcsPair) ? "Y" : /^(no|n|false|secondary)$/i.test(mcsPair) ? "N" : mcsPair;
   const templates: Record<RequestType, string[]> = {
     Network: [
-      "{{service_summary}}",
+      "Router name: {{router_name}}",
+      "Site ID: {{site_id}}",
       "",
       "Local hours of operation: {{operational_hours}}",
       "Full site address: {{site_address}}",
@@ -194,7 +201,8 @@ export function buildServiceTemplate(requestType: RequestType, router: any): { t
       "Router LEDs status:"
     ],
     LAN: [
-      "{{service_summary}}",
+      "Router name: {{router_name}}",
+      "Site ID: {{site_id}}",
       "",
       "Local hours of operation: {{operational_hours}}",
       "Full site address: {{site_address}}",
@@ -211,18 +219,18 @@ export function buildServiceTemplate(requestType: RequestType, router: any): { t
       "Cables checked:"
     ],
     Incident: [
-      "Contact Name:", "Contact Number:", "Contact Email:", "", "TW: ASAP", "", "Alternative NA", "",
+      "Router name: {{router_name}}", "Site ID: {{site_id}}", "Contact details:", "{{contact_details}}", "", "TW: ASAP", "", "Alternative NA", "",
       "Local hours of operation: {{operational_hours}}", "Full site address: {{site_address}}", "",
       "Asset tag of Faulty Equipment:", "Make and Model: NA", "IP address: NA", "PRN/Username: NA",
       "Screenshot error attached: (Y/N)", "", "Fault Description:"
     ],
     Request: [
-      "Contact Name:", "Contact Number:", "Contact Email:", "", "Alternative NA", "",
+      "Router name: {{router_name}}", "Site ID: {{site_id}}", "Contact details:", "{{contact_details}}", "", "Alternative NA", "",
       "Local hours of operation: {{operational_hours}}", "Full site address: {{site_address}}", "",
       "Asset tag of Equipment:", "Make and Model: NA", "IP address: NA", "PRN/Username: NA", "", "Request Description:"
     ],
     SITATEX: [
-      "Contact Name:", "Contact Number:", "Contact Email:", "", "TW: ASAP", "", "Alternative NA", "",
+      "Router name: {{router_name}}", "Site ID: {{site_id}}", "Contact details:", "{{contact_details}}", "", "TW: ASAP", "", "Alternative NA", "",
       "Local hours of operation: {{operational_hours}}", "Full site address: {{site_address}}", "",
       "Workstation Asset Tag:", "SITATEX address or 7 letter codes:", "SITATEX Version:",
       "Screenshot error attached? (Y/N)", "Incident description / error message:", "",
@@ -235,7 +243,7 @@ export function buildServiceTemplate(requestType: RequestType, router: any): { t
     "{{location}}": location,
     "{{operational_hours}}": hours,
     "{{site_address}}": location,
-    "{{contact_details}}": contact,
+    "{{contact_details}}": contactBlock,
     "{{service_summary}}": serviceSummary,
     "{{mcs_site}}": yesNo,
     "{{mcs_status}}": cleanCellText(router?.status),
