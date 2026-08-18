@@ -8,6 +8,42 @@ import {
   truncate,
   MAX_RESULTS,
 } from "./_core/contextBuilder";
+import { imcanRows, imcanSources } from "../drizzle/schema";
+import { and as drizzleAnd, eq as drizzleEq, ilike as drizzleIlike, or as drizzleOr } from "drizzle-orm";
+
+const NEW_INVENTORY_HASH = "5aad8e9ef455c77a708788d43cbb4e374aefca9044e6a0a0ea2333b917bc4ae0";
+
+async function searchCurrentImcanRows(db: any, query: string, limit = 5): Promise<any[]> {
+  const terms = String(query).toLowerCase().trim().split(/\s+/).filter((term) => term.length > 1);
+  if (!terms.length) return [];
+  const source = await db.select({ id: imcanSources.id, fileName: imcanSources.fileName })
+    .from(imcanSources)
+    .where(drizzleEq(imcanSources.hash, NEW_INVENTORY_HASH))
+    .limit(1);
+  if (!source.length) return [];
+  const termConditions = terms.map((term) => drizzleIlike(imcanRows.searchText, `%${term}%`));
+  const rows = await db.select({ row: imcanRows, source: imcanSources })
+    .from(imcanRows)
+    .leftJoin(imcanSources, drizzleEq(imcanRows.sourceId, imcanSources.id))
+    .where(drizzleAnd(drizzleEq(imcanRows.sourceId, source[0].id), drizzleOr(...termConditions)))
+    .limit(Math.min(limit, 5));
+  return rows.map(({ row, source: src }: any) => ({
+    source_file: src?.fileName ?? "NewInventory.xlsx",
+    sheet_name: row.sheetName,
+    source_row_number: row.sourceRowNumber,
+    current_versa_router_name: row.rowData?.["Versa Router Name"] ?? row.rowData?.["Router Name"] ?? row.rowData?.routername,
+    country: row.rowData?.Country ?? row.rowData?.country,
+    city: row.rowData?.City ?? row.rowData?.city,
+    site_id: row.rowData?.["SITE ID"] ?? row.rowData?.["Site ID"] ?? row.rowData?.site_id,
+    summary: row.rowData?.Summary ?? row.rowData?.summary,
+    subnet: row.rowData?.["Subnet IP"] ?? row.rowData?.subnet,
+    circuit: row.rowData?.["Circuit Managed"] ?? row.rowData?.["Circuit Type"] ?? row.rowData?.circuit,
+    status: row.rowData?.["MCS Status"] ?? row.rowData?.status,
+    contact_details: row.rowData?.["Contact Details"] ?? row.rowData?.contact_details,
+    operational_hours: row.rowData?.["Operational hours"] ?? row.rowData?.["Operational Hours"],
+    row_data: row.rowData,
+  }));
+}
 
 export function requestedLanguageLabel(language: AssistantLanguage) {
   return language === "ar" ? "Arabic" : "English";
@@ -156,6 +192,15 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
   const db = await getDb();
   if (!db) return noResultsAnswer(question);
 
+  // Search the normalized IMCAN source first so current Versa Router names work.
+  let currentImcanRows: any[] = [];
+  try {
+    currentImcanRows = await searchCurrentImcanRows(db, question, MAX_RESULTS);
+    if (currentImcanRows.length) context.push(...currentImcanRows);
+  } catch (error) {
+    console.error("IMCAN current inventory search failed", error);
+  }
+
   const { inventoryRecords, onedriveFiles, onedriveIndexedData } = await import("../drizzle/schema");
   const { eq, and, inArray } = await import("drizzle-orm");
 
@@ -192,7 +237,7 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
           .where(drOr2(...keywordConditions))
           .limit(MAX_RESULTS);
         if (matchedRouterRows.length > 0) {
-          context = buildInventoryContext(matchedRouterRows);
+          context.push(...buildInventoryContext(matchedRouterRows));
         }
       }
       
@@ -612,6 +657,16 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
     return { ...deterministicExcelAnswer, debug: debugInfo };
   }
 
+  const issueGiven = /\b(?:down|not\s+responding|not\s+working|failed|failure|outage|problem|issue|error|unreachable|offline|slow|broken)\b/i.test(q);
+  if (currentImcanRows.length && hasTarget && !issueGiven && !technicalDirectQuestion) {
+    return {
+      answer: "I found the matching router record. What problem would you like me to investigate?",
+      sources: currentImcanRows.slice(0, 3),
+      metadata: { stage: "waiting_for_issue", language: "en" },
+      debug: debugInfo,
+    };
+  }
+
   if (!context.length && !rawFilesContext.length) {
     return { answer: noResultsAnswer(question).answer, sources: [], metadata: null, debug: debugInfo };
   }
@@ -628,10 +683,13 @@ Rules:
 
   // Build compact context using the context builder
   const { contextJson, estimatedTokens: ctxTokens, wasTruncated } = buildContext(
-    // Flatten rawFilesContext into result objects for the builder
-    rawFilesContext.flatMap((fc: any) =>
-      (fc.content || "").split("\n\n---\n\n").map((chunk: string) => ({ _raw: chunk, source_file: fc.fileName }))
-    ),
+    // Include compact IMCAN rows plus bounded document/file chunks.
+    [
+      ...context,
+      ...rawFilesContext.flatMap((fc: any) =>
+        (fc.content || "").split("\n\n---\n\n").map((chunk: string) => ({ _raw: chunk, source_file: fc.fileName }))
+      ),
+    ],
     conversationHistoryText.slice(0, 1500),
     question
   );
