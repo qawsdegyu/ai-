@@ -15,6 +15,8 @@ import { listUsers, updateUserRole } from "./adminDb";
 import type { InsertInventoryRecord } from "../drizzle/schema";
 import { missingImportColumns } from "../shared/importValidation";
 import { answerInventoryQuestion } from "./ai2";
+import { clearImcanRouterSearchCache } from "./imcanApi";
+import { clearChatbotRouterCache } from "./ai2";
 import { appendConversationMessage, createConversation, deleteConversation, getUserConversation, listUserConversations, setConversationArchived } from "./aiHistory";
 import { getMigrationReport } from "./report";
 
@@ -511,6 +513,8 @@ export const appRouter = router({
       await db.update(imcanRows)
         .set({ rowData: input.fullData, searchText })
         .where(eq(imcanRows.id, input.id));
+      clearImcanRouterSearchCache();
+      clearChatbotRouterCache();
       return { success: true };
     }),
     deleteReferenceData: adminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
@@ -520,6 +524,8 @@ export const appRouter = router({
       const db = await getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
       await db.delete(imcanRows).where(eq(imcanRows.id, input.id));
+      clearImcanRouterSearchCache();
+      clearChatbotRouterCache();
       return { success: true };
     }),
   }),

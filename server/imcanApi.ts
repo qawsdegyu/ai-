@@ -27,6 +27,29 @@ export const imcanRouter = Router();
 const NEW_INVENTORY_HASH =
   "5aad8e9ef455c77a708788d43cbb4e374aefca9044e6a0a0ea2333b917bc4ae0";
 
+const ROUTER_SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
+const ROUTER_SEARCH_CACHE_MAX_ENTRIES = 256;
+type RouterSearchCacheEntry = { expiresAt: number; rows: any[] };
+const routerSearchCache: Map<string, RouterSearchCacheEntry> =
+  (globalThis as any).__imcanRouterSearchCache ?? new Map<string, RouterSearchCacheEntry>();
+(globalThis as any).__imcanRouterSearchCache = routerSearchCache;
+
+export function clearImcanRouterSearchCache() {
+  routerSearchCache.clear();
+}
+
+function routerSearchCacheKey(opts: { query: string; sheet?: string | null; country?: string | null; city?: string | null; siteId?: string | null; sourceHash?: string | null; limit?: number }) {
+  return JSON.stringify({
+    query: cleanText(opts.query),
+    sheet: cleanText(opts.sheet || ""),
+    country: cleanText(opts.country || ""),
+    city: cleanText(opts.city || ""),
+    siteId: cleanText(opts.siteId || ""),
+    sourceHash: opts.sourceHash || "",
+    limit: opts.limit || MAX_RESULTS,
+  });
+}
+
 const WORD_KEYWORDS = [
   "printer", "firmware", "printerSet", "printerset", "vcom",
   "usb", "xml", "amadeus", "atb", "btp", "configure", "configuration",
@@ -101,6 +124,13 @@ async function searchExcelRows(opts: {
 
   // Enforce hard cap: never more than MAX_CLIENT_LIMIT rows
   const safeLimit = Math.min(limit, MAX_CLIENT_LIMIT);
+  const cacheableRouterQuery = /\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/i.test(query) || Boolean(siteId);
+  const cacheKey = cacheableRouterQuery ? routerSearchCacheKey({ query, sheet, country, city, siteId, sourceHash, limit: safeLimit }) : "";
+  if (cacheKey) {
+    const cached = routerSearchCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.rows;
+    if (cached) routerSearchCache.delete(cacheKey);
+  }
 
   // --- resolve source ID restriction ---
   let restrictedSourceId: number | null = null;
@@ -203,7 +233,15 @@ async function searchExcelRows(opts: {
       (a.source_row_number || 0) - (b.source_row_number || 0)
   );
 
-  return scored.slice(0, safeLimit);
+  const result = scored.slice(0, safeLimit);
+  if (cacheKey) {
+    if (routerSearchCache.size >= ROUTER_SEARCH_CACHE_MAX_ENTRIES) {
+      const oldestKey = routerSearchCache.keys().next().value;
+      if (oldestKey) routerSearchCache.delete(oldestKey);
+    }
+    routerSearchCache.set(cacheKey, { expiresAt: Date.now() + ROUTER_SEARCH_CACHE_TTL_MS, rows: result });
+  }
+  return result;
 }
 
 /** Search Word document items and attach related image assets. */

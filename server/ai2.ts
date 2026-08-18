@@ -12,9 +12,22 @@ import { imcanRows, imcanSources, imcanDocuments, imcanDocumentItems, imcanDocum
 import { and as drizzleAnd, eq as drizzleEq, ilike as drizzleIlike, or as drizzleOr } from "drizzle-orm";
 
 const NEW_INVENTORY_HASH = "5aad8e9ef455c77a708788d43cbb4e374aefca9044e6a0a0ea2333b917bc4ae0";
+const CHATBOT_ROUTER_CACHE_TTL_MS = 5 * 60 * 1000;
+const chatbotRouterCache: Map<string, { expiresAt: number; rows: any[] }> =
+  (globalThis as any).__imcanChatbotRouterCache ?? new Map();
+(globalThis as any).__imcanChatbotRouterCache = chatbotRouterCache;
+
+export function clearChatbotRouterCache() {
+  chatbotRouterCache.clear();
+}
 
 async function searchCurrentImcanRows(db: any, query: string, limit = 5): Promise<any[]> {
-  const terms = String(query).toLowerCase().trim().split(/\s+/).filter((term) => term.length > 1);
+  const normalizedQuery = String(query).toLowerCase().trim().replace(/\s+/g, " ");
+  const cacheKey = `${normalizedQuery}:${limit}`;
+  const cached = chatbotRouterCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.rows;
+  if (cached) chatbotRouterCache.delete(cacheKey);
+  const terms = normalizedQuery.split(/\s+/).filter((term) => term.length > 1);
   if (!terms.length) return [];
   const source = await db.select({ id: imcanSources.id, fileName: imcanSources.fileName })
     .from(imcanSources)
@@ -49,7 +62,9 @@ async function searchCurrentImcanRows(db: any, query: string, limit = 5): Promis
   const exactRows = requestedNames.length
     ? mappedRows.filter((row: any) => requestedNames.includes(String(row.current_versa_router_name ?? "").replace(/\s*\(old router:.*?\)/i, "").trim().toLowerCase()))
     : [];
-  return exactRows.length ? exactRows : mappedRows;
+  const result = exactRows.length ? exactRows : mappedRows;
+  chatbotRouterCache.set(cacheKey, { expiresAt: Date.now() + CHATBOT_ROUTER_CACHE_TTL_MS, rows: result });
+  return result;
 }
 
 async function searchImcanDocuments(db: any, query: string, limit = 5): Promise<any[]> {
