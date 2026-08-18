@@ -80,9 +80,21 @@ async function searchImcanDocuments(db: any, query: string, limit = 5): Promise<
   }
   return items.map((item: any) => ({
     fileName: item.fileName || "IMCANEUCSheet2024.docx",
-    content: `[Word item: ${item.itemType || "text"}] [Position: ${item.position ?? "?"}]\\n${String(item.contentText || "").slice(0, 6000)}`,
+    content: `[Word item: ${item.itemType || "text"}] [Position: ${item.position ?? "?"}]\n${String(item.contentText || "").slice(0, 6000)}`,
     source: { filename: item.fileName || "IMCANEUCSheet2024.docx", item_type: item.itemType, position: item.position },
-    assets: (assetsByDocument.get(Number(item.documentId)) || []).filter((asset: any) => !asset.relatedItemPositions || JSON.stringify(asset.relatedItemPositions).includes(String(item.position ?? ""))),
+    assets: Array.from(new Map(
+      (assetsByDocument.get(Number(item.documentId)) || [])
+        .filter((asset: any) => {
+          const kind = String(asset.assetKind || "").toLowerCase();
+          const mime = String(asset.mimeType || "").toLowerCase();
+          const name = String(asset.assetName || "").toLowerCase();
+          const isVisual = kind === "image" || mime.startsWith("image/") || /\\.(png|jpe?g|gif|emf|wmf|svg)$/i.test(name);
+          if (!isVisual) return false;
+          if (!asset.relatedItemPositions) return true;
+          return JSON.stringify(asset.relatedItemPositions).includes(String(item.position ?? ""));
+        })
+        .map((asset: any) => [asset.assetName, asset])
+    ).values()),
   }));
 }
 
@@ -377,10 +389,10 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
   try {
     const documentMatches = await searchImcanDocuments(db, q, 5);
     for (const match of documentMatches) {
-      const assetLines = match.assets.map((asset: any) => `- Image/asset: ${asset.assetName}${asset.cdnUrl ? ` (${asset.cdnUrl})` : ""}`).join("\\n");
+      const assetLines = match.assets.map((asset: any) => `- Image/asset: ${asset.assetName}${asset.cdnUrl ? ` (${asset.cdnUrl})` : ""}`).join("\n");
       rawFilesContext.push({
         fileName: match.fileName,
-        content: `${match.content}${assetLines ? `\\n${assetLines}` : ""}`,
+        content: `${match.content}${assetLines ? `\n${assetLines}` : ""}`,
         source: match.source,
         assets: match.assets,
       });
