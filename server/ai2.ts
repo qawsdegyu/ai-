@@ -45,6 +45,19 @@ async function searchCurrentImcanRows(db: any, query: string, limit = 5): Promis
   }));
 }
 
+const REQUEST_TYPES = ["Network", "Incident", "LAN", "Request", "Syntax"] as const;
+type RequestType = typeof REQUEST_TYPES[number];
+
+function extractRequestType(text: string): RequestType | null {
+  const match = String(text).match(/\b(network|incident|lan|request|syntax)\b/i);
+  if (!match) return null;
+  return REQUEST_TYPES.find((type) => type.toLowerCase() === match[1].toLowerCase()) ?? null;
+}
+
+function requestTypeQuestion(): string {
+  return "Which request type applies to this router? Please choose one: Network, Incident, LAN, Request, or Syntax.";
+}
+
 export function requestedLanguageLabel(language: AssistantLanguage) {
   return language === "ar" ? "Arabic" : "English";
 }
@@ -147,6 +160,7 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
   let rawFilesContext: any[] = [];
   let conversationHistoryText = "";
   let previousUserMessageText = "";
+  let conversationUserText = "";
   let deterministicExcelAnswer: { answer: string; sources: any[]; metadata: any } | null = null;
   const debugInfo: any = { files_processed: [] };
 
@@ -171,6 +185,7 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
       if (pastChat && pastChat.messages && pastChat.messages.length > 0) {
         // Get the most recent user message before the current one to aid in DB search
         const userMessages = [...pastChat.messages].filter((m: any) => m.role === 'user');
+        conversationUserText = userMessages.map((m: any) => String(m.content ?? "").slice(0, 500)).join(" ");
         if (userMessages.length > 1) {
           previousUserMessageText = userMessages[userMessages.length - 2].content.slice(0, 300);
         }
@@ -188,6 +203,10 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
   const oneDriveCache = (global as any).oneDriveCache || new Map<string, { eTag: string, parsedData: any[] }>();
   if (!(global as any).oneDriveCache) (global as any).oneDriveCache = oneDriveCache;
 
+  const targetInConversation = /\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6}|site\s*id|airport|hostname|subnet|circuit)\b/i.test(`${q} ${conversationUserText}`);
+  const requestType = extractRequestType(`${q} ${conversationUserText}`);
+  const issueGiven = /\b(?:down|not\s+responding|not\s+working|failed|failure|outage|problem|issue|error|unreachable|offline|slow|broken)\b/i.test(q);
+
   const { getDb } = await import("./db");
   const db = await getDb();
   if (!db) return noResultsAnswer(question);
@@ -195,7 +214,9 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
   // Search the normalized IMCAN source first so current Versa Router names work.
   let currentImcanRows: any[] = [];
   try {
-    currentImcanRows = await searchCurrentImcanRows(db, question, MAX_RESULTS);
+    const identifiers = `${q} ${conversationUserText}`.match(/\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/gi) ?? [];
+    const currentSearchQuery = Array.from(new Set(identifiers.map((value) => value.toUpperCase()))).join(" ") || question;
+    currentImcanRows = await searchCurrentImcanRows(db, currentSearchQuery, MAX_RESULTS);
     if (currentImcanRows.length) context.push(...currentImcanRows);
   } catch (error) {
     console.error("IMCAN current inventory search failed", error);
@@ -657,12 +678,20 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
     return { ...deterministicExcelAnswer, debug: debugInfo };
   }
 
-  const issueGiven = /\b(?:down|not\s+responding|not\s+working|failed|failure|outage|problem|issue|error|unreachable|offline|slow|broken)\b/i.test(q);
-  if (currentImcanRows.length && hasTarget && !issueGiven && !technicalDirectQuestion) {
+  if (currentImcanRows.length && targetInConversation && !requestType) {
     return {
-      answer: "I found the matching router record. What problem would you like me to investigate?",
+      answer: requestTypeQuestion(),
       sources: currentImcanRows.slice(0, 3),
-      metadata: { stage: "waiting_for_issue", language: "en" },
+      metadata: { stage: "waiting_for_request_type", language: "en", request_types: REQUEST_TYPES },
+      debug: debugInfo,
+    };
+  }
+
+  if (currentImcanRows.length && targetInConversation && requestType && !issueGiven && !technicalDirectQuestion) {
+    return {
+      answer: `Request type selected: ${requestType}. Please describe the problem or request for this router.`,
+      sources: currentImcanRows.slice(0, 3),
+      metadata: { stage: "waiting_for_issue", language: "en", request_type: requestType },
       debug: debugInfo,
     };
   }
