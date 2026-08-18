@@ -14,6 +14,8 @@ export default function ImportCenter() {
   const [file, setFile] = useState<File | null>(null);
   const [sourceType, setSourceType] = useState("Reference");
   const [isReading, setIsReading] = useState(false);
+  const [previewRows, setPreviewRows] = useState<Array<Record<string, string>>>([]);
+  const [duplicateCount, setDuplicateCount] = useState(0);
 
   const importMutation = trpc.inventory.importExcel.useMutation({
     onSuccess: (result) => {
@@ -31,9 +33,27 @@ export default function ImportCenter() {
     }
   });
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files?.[0]) {
-      setFile(e.target.files[0]);
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = e.target.files?.[0];
+    if (!selected) return;
+    setFile(selected);
+    setPreviewRows([]);
+    setDuplicateCount(0);
+    try {
+      const XLSX = await import("xlsx");
+      const buffer = await selected.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: "array", cellFormula: false });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "" });
+      const normalized = rows.map(row => Object.fromEntries(Object.entries(row).map(([key, value]) => [key, String(value ?? "").trim()])));
+      const identityKey = (row: Record<string, string>) => `${row["Router Name"] || row["Versa Router Name"] || row["Router"] || ""}|${row["Site ID"] || row["SiteID"] || ""}`.toLowerCase();
+      const seen = new Set<string>();
+      let duplicates = 0;
+      normalized.forEach(row => { const key = identityKey(row); if (key !== "|") { if (seen.has(key)) duplicates += 1; seen.add(key); } });
+      setPreviewRows(normalized.slice(0, 5));
+      setDuplicateCount(duplicates);
+    } catch {
+      toast.error("The file could not be previewed. You can still try the server import.");
     }
   };
 
@@ -102,6 +122,8 @@ export default function ImportCenter() {
               </div>
             </div>
           </div>
+
+          {previewRows.length > 0 && <div className="space-y-3 border border-[#1e293b] bg-[#071426] p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div className="text-sm font-semibold text-[#d8f3ff]">Import preview</div><div className={`text-xs font-semibold ${duplicateCount > 0 ? "text-[#f5c45e]" : "text-[#65d892]"}`}>{duplicateCount > 0 ? `${duplicateCount} possible duplicate rows` : "No duplicate Router/Site pairs found"}</div></div><div className="overflow-x-auto"><table className="min-w-full text-left text-xs"><thead><tr className="border-b border-[#1e293b] text-[#7de7ff]"><th className="px-2 py-2">Router</th><th className="px-2 py-2">Site ID</th><th className="px-2 py-2">Country</th></tr></thead><tbody>{previewRows.map((row, index) => <tr key={index} className="border-b border-[#1e293b] last:border-0"><td className="px-2 py-2 text-slate-300">{row["Router Name"] || row["Versa Router Name"] || row["Router"] || "—"}</td><td className="px-2 py-2 font-mono text-slate-400">{row["Site ID"] || row["SiteID"] || "—"}</td><td className="px-2 py-2 text-slate-400">{row.Country || row.country || "—"}</td></tr>)}</tbody></table></div></div>}
 
           <div className="flex flex-col gap-3">
             <Button type="button" onClick={submitDatabaseFile} disabled={isReading || importMutation.isPending || !file} className="w-full h-11 bg-[#22c7a7] text-white hover:bg-[#0f6037]">

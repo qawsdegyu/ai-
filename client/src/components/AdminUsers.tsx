@@ -19,14 +19,14 @@ export default function AdminUsers() {
     onSuccess: () => {
       toast.success("User created successfully");
       setIsDialogOpen(false);
-      setNewUser({ name: "", email: "", password: "", role: "user" });
+      setNewUser({ name: "", email: "", password: "", role: "viewer" });
       void users.refetch();
     },
     onError: error => toast.error(error.message)
   });
 
   const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [newUser, setNewUser] = useState({ name: "", email: "", password: "", role: "user" as "admin" | "user" });
+  const [newUser, setNewUser] = useState({ name: "", email: "", password: "", role: "viewer" as "admin" | "supervisor" | "technician" | "viewer" });
 
   const handleCreateUser = (e: React.FormEvent) => {
     e.preventDefault();
@@ -64,9 +64,9 @@ export default function AdminUsers() {
             </div>
             <div>
               <label className="text-sm font-medium mb-1 block">Role</label>
-              <Select value={newUser.role} onValueChange={role => setNewUser({ ...newUser, role: role as "admin" | "user" })}>
+              <Select value={newUser.role} onValueChange={role => setNewUser({ ...newUser, role: role as "admin" | "supervisor" | "technician" | "viewer" })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="user">User</SelectItem><SelectItem value="admin">Admin</SelectItem></SelectContent>
+                <SelectContent><SelectItem value="viewer">Viewer</SelectItem><SelectItem value="technician">Technician</SelectItem><SelectItem value="supervisor">Supervisor</SelectItem><SelectItem value="admin">Admin</SelectItem></SelectContent>
               </Select>
             </div>
             <Button type="submit" className="w-full bg-[#22c7a7] hover:bg-[#126b3e]" disabled={createUser.isPending}>
@@ -94,9 +94,9 @@ export default function AdminUsers() {
             </div>
             <div className="flex items-center gap-3">
               <Badge className="bg-[#102a43] text-[#d8f3ff] hover:bg-[#173b5f]">{user.role}</Badge>
-              <Select value={user.role} onValueChange={role => updateRole.mutate({ userId: user.id, role: role as "admin" | "user" })} disabled={updateRole.isPending || authUser.data?.id === user.id}>
+              <Select value={user.role} onValueChange={role => updateRole.mutate({ userId: user.id, role: role as "admin" | "supervisor" | "technician" | "viewer" })} disabled={updateRole.isPending || authUser.data?.id === user.id}>
                 <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="user">user</SelectItem><SelectItem value="admin">admin</SelectItem></SelectContent>
+                <SelectContent><SelectItem value="viewer">viewer</SelectItem><SelectItem value="technician">technician</SelectItem><SelectItem value="supervisor">supervisor</SelectItem><SelectItem value="user">user (legacy)</SelectItem><SelectItem value="admin">admin</SelectItem></SelectContent>
               </Select>
               <Button 
                 variant="ghost" 

@@ -4,6 +4,8 @@ import { lazy, Suspense } from "react";
 import { Loader2 } from "lucide-react";
 import NotFound from "@/pages/NotFound";
 import Home from "@/pages/Home";
+import SystemHealth from "@/pages/SystemHealth";
+import Help from "@/pages/Help";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
@@ -21,6 +23,10 @@ function Router() {
 
         <Route path={"/admin/users"} component={Home} />
         <Route path={"/assistant"} component={Home} />
+        <Route path={"/health"} component={SystemHealth} />
+        <Route path={"/help"} component={Help} />
+        <Route path={"/import"} component={Home} />
+        <Route path={"/editor"} component={Home} />
         <Route path={"/404"} component={NotFound} />
         {/* Final fallback route */}
         <Route component={NotFound} />

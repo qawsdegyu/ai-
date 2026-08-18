@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/sidebar";
 import { startLogin } from "@/const";
 import { useIsMobile } from "@/hooks/useMobile";
-import { BarChart3, Bot, LayoutDashboard, LogOut, PanelLeft, Search, Settings2, TableProperties, Upload, MessageSquare, MoreHorizontal } from "lucide-react";
+import { Activity, BarChart3, Bot, CircleHelp, FileUp, LayoutDashboard, LogOut, PanelLeft, Search, Settings2, MessageSquare, MoreHorizontal } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
@@ -30,16 +30,20 @@ import { Button } from "./ui/button";
 const menuItems = [
   { icon: LayoutDashboard, label: "Overview", path: "/" },
   { icon: Search, label: "Router Search", path: "/search" },
-  { icon: MessageSquare, label: "AI Analytics", path: "/analytics" },
   { icon: Bot, label: "AI Assistant", path: "/assistant" },
+  { icon: Activity, label: "System Health", path: "/health" },
+  { icon: MessageSquare, label: "AI Analytics", path: "/analytics" },
+  { icon: FileUp, label: "Import Center", path: "/import" },
   { icon: Settings2, label: "Admin Users", path: "/admin/users" },
+  { icon: CircleHelp, label: "Help Center", path: "/help" },
 ];
 
 const mobileMenuItems = [
   { icon: LayoutDashboard, label: "Overview", path: "/" },
   { icon: Search, label: "Search", path: "/search" },
   { icon: Bot, label: "AI Assistant", path: "/assistant" },
-  { icon: MessageSquare, label: "Analytics", path: "/analytics" },
+  { icon: Activity, label: "Health", path: "/health" },
+  { icon: CircleHelp, label: "Help", path: "/help" },
 ];
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
@@ -192,7 +196,7 @@ function DashboardLayoutContent({
           <SidebarContent className="min-h-0 flex-1 gap-0 overflow-y-auto border-t border-[#10283f]/70">
             <SidebarMenu className="px-2 py-1">
               {menuItems.map(item => {
-                if ((item.path === "/admin/users" || item.path === "/analytics") && user?.role !== "admin") {
+                if ((item.path === "/admin/users" || item.path === "/analytics" || item.path === "/import" || item.path === "/editor") && user?.role !== "admin") {
                   return null;
                 }
                 
