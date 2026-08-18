@@ -838,9 +838,7 @@ imcanRouter.post("/chat", async (req, res) => {
       );
     }
 
-    /* ══════════════════════════════════════════════════════════════
-       STATE: ANSWER_READY — call LLM with compact context
-    ══════════════════════════════════════════════════════════════ */
+    // STATE: ANSWER_READY — call LLM with compact context
     const intentCtx = detectIntent(question);
     const compactContext = combinedContext
       .slice(0, MAX_RESULTS)
