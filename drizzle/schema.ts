@@ -243,8 +243,8 @@ export const fileCellSources = pgView("file_cell_sources").as((qb) => {
 export const imcanSources = pgTable("imcan_sources", {
   id: serial("id").primaryKey(),
   fileName: text("file_name"),
-  version: text("version"),
-  hash: text("hash")
+  version: text("version_label"),
+  hash: text("file_sha256")
 });
 
 export const imcanSheets = pgTable("imcan_sheets", {
