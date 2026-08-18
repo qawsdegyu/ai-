@@ -88,7 +88,7 @@ async function searchImcanDocuments(db: any, query: string, limit = 5): Promise<
           const kind = String(asset.assetKind || "").toLowerCase();
           const mime = String(asset.mimeType || "").toLowerCase();
           const name = String(asset.assetName || "").toLowerCase();
-          const isVisual = kind === "image" || mime.startsWith("image/") || /\\.(png|jpe?g|gif|emf|wmf|svg)$/i.test(name);
+          const isVisual = /^(image\/(png|jpe?g|gif|webp|svg\+xml))$/.test(mime) || /\.(png|jpe?g|gif|webp|svg)$/i.test(name);
           if (!isVisual) return false;
           const related = asset.relatedItemPositions;
           const hasRelatedPositions = Array.isArray(related) ? related.length > 0 : (typeof related === "string" ? !["", "[]", "{}"].includes(related.trim()) : Boolean(related));
@@ -104,7 +104,7 @@ function buildWordProcedureAnswer(matches: any[], question: string) {
   const wantsImage = /image|picture|photo|screenshot|display|show|visual/i.test(question);
   const uniqueItems = Array.from(new Map(matches.map((match: any) => [`${match.fileName}:${match.source?.position}`, match])).values()).slice(0, 8);
   const procedureLines = uniqueItems.map((match: any) => `- ${String(match.content || "").replace(/^\[Word item:[^\]]+\] \[Position:[^\]]+\]\n?/, "").trim()}\n  - Source: File ${match.source?.filename || match.fileName}, document position ${match.source?.position ?? "?"}`).join("\n");
-  const imageMatches = uniqueItems.flatMap((match: any) => match.assets || []).filter((asset: any) => asset.cdnUrl && (String(asset.assetKind || "").toLowerCase() === "image" || String(asset.mimeType || "").toLowerCase().startsWith("image/") || /\.(png|jpe?g|gif|emf|wmf|svg)(?:\?|$)/i.test(String(asset.assetName || asset.cdnUrl)))).filter((asset: any, index: number, arr: any[]) => arr.findIndex((candidate: any) => candidate.assetName === asset.assetName) === index).slice(0, wantsImage ? 5 : 0);
+  const imageMatches = uniqueItems.flatMap((match: any) => match.assets || []).filter((asset: any) => asset.cdnUrl && (/^image\/(png|jpe?g|gif|webp|svg\+xml)$/i.test(String(asset.mimeType || "")) || /\.(png|jpe?g|gif|webp|svg)(?:\?|$)/i.test(String(asset.assetName || asset.cdnUrl)))).filter((asset: any, index: number, arr: any[]) => arr.findIndex((candidate: any) => candidate.assetName === asset.assetName) === index).slice(0, wantsImage ? 5 : 0);
   const imageLines = imageMatches.map((asset: any) => `![${asset.assetName}](${asset.cdnUrl})`).join("\n\n");
   return `**Verified procedure from IMCAN Word document**\n\n${procedureLines || "I could not find a matching procedure in the document."}${imageLines ? `\n\n**Related image(s)**\n\n${imageLines}` : ""}\n\n**Source**\n- File: IMCANEUCSheet2024.docx\n- Document positions: ${uniqueItems.map((match: any) => match.source?.position).filter(Boolean).join(", ") || "Not available"}`;
 }
