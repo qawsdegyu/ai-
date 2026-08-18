@@ -537,7 +537,7 @@ export const appRouter = router({
       return getAllAiMessages();
     }),
     users: adminProcedure.query(() => listUsers()),
-    createUser: adminProcedure.input(z.object({ name: z.string().min(1), email: z.string().email(), password: z.string().min(6), role: z.enum(["admin", "supervisor", "technician", "viewer"]) })).mutation(async ({ input }) => {
+    createUser: adminProcedure.input(z.object({ name: z.string().min(1), email: z.string().email(), password: z.string().min(6), role: z.enum(["admin", "user"]) })).mutation(async ({ input }) => {
       const { createClient } = await import("@supabase/supabase-js");
       const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
       if (!serviceRoleKey) {
@@ -560,7 +560,7 @@ export const appRouter = router({
       await import("./db").then(db => db.upsertUser({ openId: data.user!.id, name: input.name, email: input.email, role: input.role, loginMethod: "supabase" }));
       return { success: true };
     }),
-    updateRole: adminProcedure.input(z.object({ userId: z.number().int().positive(), role: z.enum(["admin", "supervisor", "technician", "viewer"]) })).mutation(({ input, ctx }) => updateUserRole(input.userId, input.role, { id: ctx.user.id, name: ctx.user.name })),
+    updateRole: adminProcedure.input(z.object({ userId: z.number().int().positive(), role: z.enum(["admin", "user"]) })).mutation(({ input, ctx }) => updateUserRole(input.userId, input.role, { id: ctx.user.id, name: ctx.user.name })),
     deleteUser: adminProcedure.input(z.object({ userId: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
       const { deleteUser } = await import("./adminDb");
       return deleteUser(input.userId, { id: ctx.user.id, name: ctx.user.name });

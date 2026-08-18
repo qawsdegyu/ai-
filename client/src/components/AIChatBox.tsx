@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { Loader2, Send, User, Sparkles, ThumbsDown, ThumbsUp } from "lucide-react";
+import { Loader2, Send, User, Sparkles } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { Streamdown } from "streamdown";
 import { assistantLoadingState } from "@shared/aiLoading";
@@ -58,7 +58,6 @@ export type AIChatBoxProps = {
    * Click to send directly
    */
   suggestedPrompts?: string[];
-  onFeedback?: (message: Message, value: "helpful" | "incorrect") => void;
 };
 
 /**
@@ -121,7 +120,6 @@ export function AIChatBox({
   height = "600px",
   emptyStateMessage = "Start a conversation with AI",
   suggestedPrompts,
-  onFeedback,
 }: AIChatBoxProps) {
   const [input, setInput] = useState("");
   const scrollAreaRef = useRef<HTMLDivElement>(null);
@@ -271,7 +269,6 @@ export function AIChatBox({
                       {message.role === "assistant" ? (
                         <div className="prose prose-sm dark:prose-invert max-w-none leading-6 [&_p]:my-2 [&_ul]:my-2 [&_li]:my-1 [&_strong]:text-white">
                           <Streamdown>{textWithoutImages}</Streamdown>
-                          {onFeedback && <div className="mt-3 flex items-center gap-2 border-t border-border/60 pt-2"><span className="text-[11px] text-muted-foreground">Was this useful?</span><button type="button" aria-label="Mark answer helpful" onClick={() => onFeedback(message, "helpful")} className="text-muted-foreground hover:text-emerald-400"><ThumbsUp size={13} /></button><button type="button" aria-label="Report incorrect answer" onClick={() => onFeedback(message, "incorrect")} className="text-muted-foreground hover:text-red-400"><ThumbsDown size={13} /></button></div>}
                           {imageMatches.length > 0 && (
                             <div className="mt-4 grid gap-3">
                               {imageMatches.map((match, imageIndex) => (
