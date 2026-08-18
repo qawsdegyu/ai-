@@ -58,6 +58,75 @@ function requestTypeQuestion(): string {
   return "Which request type applies to this router? Please choose one: Network, Incident, LAN, Request, or Syntax.";
 }
 
+function buildServiceTemplate(requestType: RequestType, router: any): { text: string; source: any } {
+  const row = router?.source_row_number ?? "20";
+  const file = router?.source_file ?? "IMCAN-Reference-Sheet---2024-router-updated.xlsm";
+  const routerName = router?.current_versa_router_name || "Not available";
+  const siteId = router?.site_id || "Not available";
+  const location = [router?.country, router?.city].filter(Boolean).join(" / ") || "Not available";
+  const hours = router?.operational_hours || "Not available";
+  const address = router?.contact_details || "Not available";
+  const templates: Record<RequestType, string[]> = {
+    Network: [
+      "Local hours of operation: {{operational_hours}}",
+      "Full site address: {{site_address}}",
+      "Business Impact: NA",
+      "MCS Site: {{mcs_status}}",
+      "Backup Available: {{backup_available}}",
+      "Issue description:",
+      "",
+      "Mandatory details for Down issue:",
+      "~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+      "Power status on site:",
+      "Modem rebooted:",
+      "Cables checked:",
+      "Modem LEDs status:",
+      "Router LEDs status:"
+    ],
+    LAN: [
+      "Local hours of operation: {{operational_hours}}",
+      "Full site address: {{site_address}}",
+      "Business Impact: NA",
+      "Backup Available: {{backup_available}}",
+      "Issue description:",
+      "",
+      "Mandatory details for Down issue:",
+      "~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+      "Power status on site:",
+      "Cables checked:"
+    ],
+    Incident: [
+      "Contact Name:", "Contact Number:", "Contact Email:", "", "TW: ASAP", "", "Alternative NA", "",
+      "Local hours of operation: {{operational_hours}}", "Full site address: {{site_address}}", "",
+      "Asset tag of Faulty Equipment:", "Make and Model: NA", "IP address: NA", "PRN/Username: NA",
+      "Screenshot error attached: (Y/N)", "", "Fault Description:"
+    ],
+    Request: [
+      "Contact Name:", "Contact Number:", "Contact Email:", "", "Alternative NA", "",
+      "Local hours of operation: {{operational_hours}}", "Full site address: {{site_address}}", "",
+      "Asset tag of Equipment:", "Make and Model: NA", "IP address: NA", "PRN/Username: NA", "", "Request Description:"
+    ],
+    Syntax: [
+      "Contact Name:", "Contact Number:", "Contact Email:", "", "TW: ASAP", "", "Alternative NA", "",
+      "Local hours of operation: {{operational_hours}}", "Full site address: {{site_address}}", "",
+      "Workstation Asset Tag:", "SITATEX address or 7 letter codes:", "SITATEX Version:",
+      "Screenshot error attached? (Y/N)", "Incident description / error message:", "",
+      "Troubleshooting already done (Yes / No. If Yes, what kind and results):"
+    ]
+  };
+  const replacements: Record<string, string> = {
+    "{{router_name}}": routerName,
+    "{{site_id}}": siteId,
+    "{{location}}": location,
+    "{{operational_hours}}": hours,
+    "{{site_address}}": address,
+    "{{mcs_status}}": router?.status || "Not available",
+    "{{backup_available}}": router?.row_data?.["Backup Available"] || "Not available",
+  };
+  const text = templates[requestType].map(line => Object.entries(replacements).reduce((out, [key, value]) => out.replaceAll(key, value), line)).join("\n");
+  return { text, source: { filename: file, sheet: "Dashboard", row, service: requestType } };
+}
+
 export function requestedLanguageLabel(language: AssistantLanguage) {
   return language === "ar" ? "Arabic" : "English";
 }
@@ -211,6 +280,7 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
   const db = await getDb();
   if (!db) return noResultsAnswer(question);
 
+
   // Search the normalized IMCAN source first so current Versa Router names work.
   let currentImcanRows: any[] = [];
   try {
@@ -220,6 +290,18 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
     if (currentImcanRows.length) context.push(...currentImcanRows);
   } catch (error) {
     console.error("IMCAN current inventory search failed", error);
+  }
+
+  // The Dashboard service selector is backed by the template formula in Dashboard row 20.
+  // Keep the exact service fields in the retrieved context so the model cannot replace them
+  // with a generic answer. Syntax follows the workbook's SITATEX template.
+  if (requestType && currentImcanRows.length) {
+    const serviceTemplate = buildServiceTemplate(requestType, currentImcanRows[0]);
+    rawFilesContext.push({
+      fileName: serviceTemplate.source.filename,
+      content: `[Sheet: ${serviceTemplate.source.sheet}] [Row: ${serviceTemplate.source.row}] [Service: ${requestType}]\n${serviceTemplate.text}`,
+      source: serviceTemplate.source,
+    });
   }
 
   const { inventoryRecords, onedriveFiles, onedriveIndexedData } = await import("../drizzle/schema");
@@ -674,10 +756,6 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
      };
   }
 
-  if (deterministicExcelAnswer) {
-    return { ...deterministicExcelAnswer, debug: debugInfo };
-  }
-
   if (currentImcanRows.length && targetInConversation && !requestType) {
     return {
       answer: requestTypeQuestion(),
@@ -688,12 +766,22 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
   }
 
   if (currentImcanRows.length && targetInConversation && requestType && !issueGiven && !technicalDirectQuestion) {
+    const serviceTemplate = buildServiceTemplate(requestType, currentImcanRows[0]);
     return {
-      answer: `Request type selected: ${requestType}. Please describe the problem or request for this router.`,
+      answer: `Request type selected: ${requestType}.\\n\\nPlease use or complete this service template from the IMCAN workbook:\\n\\n${serviceTemplate.text}\\n\\nSource: File ${serviceTemplate.source.filename}, Sheet ${serviceTemplate.source.sheet}, Row ${serviceTemplate.source.row}.\\n\\nPlease describe the problem or request for this router.`,
       sources: currentImcanRows.slice(0, 3),
-      metadata: { stage: "waiting_for_issue", language: "en", request_type: requestType },
+      metadata: { stage: "waiting_for_issue", language: "en", request_type: requestType, template_source: serviceTemplate.source },
       debug: debugInfo,
     };
+  }
+
+  if (deterministicExcelAnswer) {
+    if (requestType && currentImcanRows.length) {
+      const serviceTemplate = buildServiceTemplate(requestType, currentImcanRows[0]);
+      deterministicExcelAnswer.answer = `${deterministicExcelAnswer.answer}\n\n**${requestType} Service Template**\n${serviceTemplate.text}\n\n**Template source:** File ${serviceTemplate.source.filename}, Sheet ${serviceTemplate.source.sheet}, Row ${serviceTemplate.source.row}.`;
+      deterministicExcelAnswer.metadata = { ...deterministicExcelAnswer.metadata, request_type: requestType, template_source: serviceTemplate.source };
+    }
+    return { ...deterministicExcelAnswer, debug: debugInfo };
   }
 
   if (!context.length && !rawFilesContext.length) {
