@@ -81,17 +81,33 @@ function routerSpecificRecords(rows: any[]): string {
 function buildServiceTemplate(requestType: RequestType, router: any): { text: string; source: any } {
   const row = router?.source_row_number ?? "20";
   const file = router?.source_file ?? "IMCAN-Reference-Sheet---2024-router-updated.xlsm";
-  const routerName = router?.current_versa_router_name || "Not available";
-  const siteId = router?.site_id || "Not available";
-  const location = [router?.country, router?.city].filter(Boolean).join(" / ") || "Not available";
-  const hours = router?.operational_hours || "Not available";
-  const address = router?.contact_details || "Not available";
+  const cleanCellText = (value: unknown, fallback = "Not available") => {
+    const cleaned = String(value ?? "")
+      .replace(/\\\\n/g, "\n")
+      .replace(/\\\\5/g, "\n")
+      .replace(/\\r/g, "")
+      .trim();
+    return cleaned || fallback;
+  };
+  const routerName = cleanCellText(router?.current_versa_router_name, "Not available");
+  const siteId = cleanCellText(router?.site_id, "Not available");
+  const location = cleanCellText(router?.full_site_address || router?.row_data?.location || router?.row_data?.full_site_address, [router?.country, router?.city].filter(Boolean).join(" / ") || "Not available");
+  const contact = cleanCellText(router?.contact_details || router?.row_data?.contact_details);
+  const hours = cleanCellText(router?.operational_hours || router?.row_data?.operational_hours);
+  const serviceSummary = cleanCellText(router?.remarks || router?.row_data?.remarks, "IMCAN service request");
+  const mcsPair = cleanCellText(router?.row_data?.mcs_pair || router?.row_data?.["MCS Pair"], "Not available");
+  const yesNo = /^(yes|y|true|primary)$/i.test(mcsPair) ? "Y" : /^(no|n|false|secondary)$/i.test(mcsPair) ? "N" : mcsPair;
   const templates: Record<RequestType, string[]> = {
     Network: [
+      "{{service_summary}}",
+      "",
       "Local hours of operation: {{operational_hours}}",
       "Full site address: {{site_address}}",
+      "Contact details:",
+      "{{contact_details}}",
+      "",
       "Business Impact: NA",
-      "MCS Site: {{mcs_status}}",
+      "MCS Site: {{mcs_site}}",
       "Backup Available: {{backup_available}}",
       "Issue description:",
       "",
@@ -104,8 +120,13 @@ function buildServiceTemplate(requestType: RequestType, router: any): { text: st
       "Router LEDs status:"
     ],
     LAN: [
+      "{{service_summary}}",
+      "",
       "Local hours of operation: {{operational_hours}}",
       "Full site address: {{site_address}}",
+      "Contact details:",
+      "{{contact_details}}",
+      "",
       "Business Impact: NA",
       "Backup Available: {{backup_available}}",
       "Issue description:",
@@ -139,9 +160,12 @@ function buildServiceTemplate(requestType: RequestType, router: any): { text: st
     "{{site_id}}": siteId,
     "{{location}}": location,
     "{{operational_hours}}": hours,
-    "{{site_address}}": address,
-    "{{mcs_status}}": router?.status || "Not available",
-    "{{backup_available}}": router?.row_data?.["Backup Available"] || "Not available",
+    "{{site_address}}": location,
+    "{{contact_details}}": contact,
+    "{{service_summary}}": serviceSummary,
+    "{{mcs_site}}": yesNo,
+    "{{mcs_status}}": cleanCellText(router?.status),
+    "{{backup_available}}": yesNo,
   };
   const text = templates[requestType].map(line => Object.entries(replacements).reduce((out, [key, value]) => out.replaceAll(key, value), line)).join("\n");
   return { text, source: { filename: file, sheet: "Dashboard", row, service: requestType } };
