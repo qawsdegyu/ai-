@@ -428,9 +428,12 @@ function sanitiseResponseMessage(msg: string): string {
   return msg;
 }
 
-/** Enforce English on every /chat response. */
 function buildUserResponse(payload: Record<string, any>): Record<string, any> {
-  return { ...payload, language: "en", message: sanitiseResponseMessage(String(payload.message ?? "")) };
+  return {
+    ...payload,
+    language: "en",
+    message: sanitiseResponseMessage(String(payload.message ?? "")),
+  };
 }
 
 /* ─── Entity extraction ─────────────────────────────────────────── */
@@ -640,14 +643,6 @@ Return a JSON object with this schema ONLY:
 
 /* ─── Helpers: response building and no-match ───────────────────── */
 
-function buildUserResponse(payload: Record<string, any>): Record<string, any> {
-  return {
-    ...payload,
-    language: "en",
-    message: sanitiseResponseMessage(String(payload.message ?? "")),
-  };
-}
-
 function noMatchForTarget(target: string): Record<string, any> {
   return buildUserResponse({
     stage: "answer_ready",
@@ -824,61 +819,40 @@ imcanRouter.post("/chat", async (req, res) => {
         );
       }
 
-      // Exactly one router fo�═════════════
-       STATE: ANSWER_READY — call LLM with compact context
-    ════════════════════════════════════════════════════════════ */
-    const intent = detectIntent(question);
-    const compactContext = combinedContext.slice(0, MAX_RESULTS).map((r: any) => toCompactResult(r, intent));
+      // Exactly one router found → confirm and ask for the issue
+      return res.json(
+        buildUserResponse({
+          stage: "waiting_for_issue",
+          message:
+            "I found the matching router record. What problem would you like me to investigate?",
+          found_record: true,
+          sources: combinedContext.slice(0, 3).map((r: any) => ({
+            source_file: r.source_file,
+            sheet_name: r.sheet_name,
+            source_row_number: r.source_row_number,
+            position: r.position,
+          })),
+          results: [],
+          attachments: [],
+        })
+      );
+    }
 
-    const SYSTEM_PROMPT = `You are an English-only IMCAN Support Data Assistant.
-All user-facing messages must be written in English. Never answer in Arabic, even when the user writes in Arabic.
-Use only verified data from the retrieved database context. Never invent data, never use general knowledge.
-
-STRICT RULES:
-1. Never display old/legacy router names unless explicitly asked.
-2. Never show boolean values (true/false). Convert to Yes/No if relevant, or omit entirely.
-3. Never show null, undefined, empty objects, or raw JSON to users.
-4. Never combine fields from different rows into one answer.
-5. Every factual answer must cite: Source File, Sheet Name, and Original Row Number (or Document Position).
-6. If the context does not contain the answer, respond exactly: "I could not find a matching record in the available IMCAN sources."
-7. If partial match only: "I found a partial match, but the available data is not sufficient to confirm the correct record."
-8. ALWAYS respond in English only, regardless of the language of the user's question.
-
-RESPONSE FORMAT (English bullet points — omit any field that is empty, null, or false):
-- Issue:
-- Current Versa Router Name:
-- Site:
-- Country:
-- City:
-- Finding:
-- Relevant Data:
-- Contact or Resolver:
-- Source File:
-- Sheet:
-- Original Row Number:
-- Related Image:
-
-Return a JSON object with this schema ONLY:
-{
-  "message": "Full English bullet-point answer",
-  "language": "en",
-  "stage": "answer_ready",
-  "found_record": boolean,
-  "sources": [{ "source_file": string, "sheet_name"?: string, "source_row_number"?: number, "position"?: number }],
-  "results": [],
-  "attachments": [{ "asset_name": string, "mime_type": string, "url": string, "reason": string }]
-}`;
+    // STATE: ANSWER_READY — call LLM with compact context
+    const intentCtx = detectIntent(question);
+    const compactContext = combinedContext
+      .slice(0, MAX_RESULTS)
+      .map((r: any) => toCompactResult(r, intentCtx));
 
     const compactContextJson = JSON.stringify(compactContext);
 
-    // Token safety gate — block if over limit
     const totalEstimatedTokens =
-      estimateTokens(SYSTEM_PROMPT) +
+      estimateTokens(CHAT_SYSTEM_PROMPT) +
       estimateTokens(question) +
       estimateTokens(compactContextJson) +
-      4_000; // reserved for model answer
+      4_000;
 
-    console.log(`[IMCAN /chat] estimated input tokens: ${totalEstimatedTokens}, results: ${compactContext.length}`);
+    console.log(`[IMCAN /chat] estimated tokens: ${totalEstimatedTokens}, results: ${compactContext.length}`);
 
     if (totalEstimatedTokens > CONTEXT_HARD_LIMIT_TOKENS) {
       console.warn(`[IMCAN /chat] BLOCKED — payload too large (${totalEstimatedTokens} tokens)`);
@@ -898,10 +872,12 @@ Return a JSON object with this schema ONLY:
     const llmResponse = await invokeLLM({
       model: "openai/gpt-4o",
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: CHAT_SYSTEM_PROMPT },
         {
           role: "user",
-          content: `Question: ${question}\n\nRetrieved Context (top ${compactContext.length} records, compact):\n${compactContextJson}`,
+          content:
+            `Question: ${question}\n\n` +
+            `Retrieved Context (${compactContext.length} records, intent: ${intent}):\n${compactContextJson}`,
         },
       ],
       response_format: { type: "json_object" },
@@ -919,13 +895,11 @@ Return a JSON object with this schema ONLY:
     };
 
     if (typeof raw === "string") {
-      try {
-        parsed = JSON.parse(raw);
-      } catch (_) { /* keep default */ }
+      try { parsed = JSON.parse(raw); } catch (_) { /* keep default */ }
     }
 
-    // Enforce English on every LLM response before sending to client
     return res.json(buildUserResponse(parsed));
+
   } catch (e: any) {
     console.error("imcan/chat error", e);
     return res.status(500).json({ error: e.message });
