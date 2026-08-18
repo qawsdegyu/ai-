@@ -47,6 +47,34 @@ describe("inventory AI assistant", () => {
     expect(result.source.data_filename).toBe("NewInventory.xlsx");
   });
 
+  it("builds every workbook service template without dropping its required fields", () => {
+    const base = {
+      source_file: "NewInventory.xlsx",
+      source_row_number: 3,
+      sheet_name: "Inventory",
+      current_versa_router_name: "VAPAMM001",
+      full_site_address: "Queen Alia Airport, Amman",
+      contact_details: "Contact Name: Ahmed\\nContact Phone: +962",
+      operational_hours: "NA",
+      remarks: "New SD-WAN Connection",
+      row_data: { mcs_pair: "Yes" },
+      status: "Primary",
+    };
+    const required: Record<string, string[]> = {
+      Network: ["Issue description:", "Power status on site:", "Router LEDs status:"],
+      Incident: ["Asset tag of Faulty Equipment:", "Fault Description:"],
+      LAN: ["Issue description:", "Power status on site:"],
+      Request: ["Asset tag of Equipment:", "Request Description:"],
+      SITATEX: ["SITATEX address or 7 letter codes:", "Incident description / error message:"],
+    };
+    for (const [service, fields] of Object.entries(required)) {
+      const result = buildServiceTemplate(service as any, base);
+      expect(result.source.service).toBe(service);
+      for (const field of fields) expect(result.text).toContain(field);
+      expect(result.text).not.toContain("\\\\n");
+    }
+  });
+
   it("uses the language of the question when detecting response language", () => {
     expect(detectAssistantLanguage("Which sheet contains the IMCAN support note?", "ar")).toBe("en");
     expect(detectAssistantLanguage("في أي ورقة توجد ملاحظة دعم IMCAN؟", "en")).toBe("ar");
