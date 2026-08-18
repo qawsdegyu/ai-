@@ -90,8 +90,10 @@ async function searchImcanDocuments(db: any, query: string, limit = 5): Promise<
           const name = String(asset.assetName || "").toLowerCase();
           const isVisual = kind === "image" || mime.startsWith("image/") || /\\.(png|jpe?g|gif|emf|wmf|svg)$/i.test(name);
           if (!isVisual) return false;
-          if (!asset.relatedItemPositions || (Array.isArray(asset.relatedItemPositions) && asset.relatedItemPositions.length === 0)) return true;
-          return JSON.stringify(asset.relatedItemPositions).includes(String(item.position ?? ""));
+          const related = asset.relatedItemPositions;
+          const hasRelatedPositions = Array.isArray(related) ? related.length > 0 : (typeof related === "string" ? !["", "[]", "{}"].includes(related.trim()) : Boolean(related));
+          if (!hasRelatedPositions) return true;
+          return JSON.stringify(related).includes(String(item.position ?? ""));
         })
         .map((asset: any) => [asset.assetName, asset])
     ).values()),

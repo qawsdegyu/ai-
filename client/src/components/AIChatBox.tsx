@@ -229,6 +229,9 @@ export function AIChatBox({
           <ScrollArea className="h-full">
             <div className="flex flex-col space-y-5 px-5 py-4 lg:px-6">
               {displayMessages.map((message, index) => {
+                const imagePattern = /!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g;
+                const imageMatches = message.role === "assistant" ? Array.from(message.content.matchAll(imagePattern)) : [];
+                const textWithoutImages = message.content.replace(imagePattern, "").replace(/\n{3,}/g, "\n\n").trim();
                 // Apply min-height to last message only if NOT loading (when loading, the loading indicator gets it)
                 const isLastMessage = index === displayMessages.length - 1;
                 const shouldApplyMinHeight =
@@ -265,7 +268,17 @@ export function AIChatBox({
                     >
                       {message.role === "assistant" ? (
                         <div className="prose prose-sm dark:prose-invert max-w-none leading-6 [&_p]:my-2 [&_ul]:my-2 [&_li]:my-1 [&_strong]:text-white">
-                          <Streamdown>{message.content}</Streamdown>
+                          <Streamdown>{textWithoutImages}</Streamdown>
+                          {imageMatches.length > 0 && (
+                            <div className="mt-4 grid gap-3">
+                              {imageMatches.map((match, imageIndex) => (
+                                <figure key={`${match[2]}-${imageIndex}`} className="overflow-hidden rounded-lg border border-border bg-background/40 p-2">
+                                  <img src={match[2]} alt={match[1] || "Image from IMCAN Word document"} loading="lazy" className="max-h-[520px] w-full object-contain" />
+                                  <figcaption className="mt-1 text-xs text-muted-foreground">{match[1] || "IMCAN Word document image"}</figcaption>
+                                </figure>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <p className="whitespace-pre-wrap text-sm">
