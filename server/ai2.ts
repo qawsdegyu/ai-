@@ -27,7 +27,7 @@ async function searchCurrentImcanRows(db: any, query: string, limit = 5): Promis
     .leftJoin(imcanSources, drizzleEq(imcanRows.sourceId, imcanSources.id))
     .where(drizzleAnd(drizzleEq(imcanRows.sourceId, source[0].id), drizzleOr(...termConditions)))
     .limit(Math.min(limit, 5));
-  return rows.map(({ row, source: src }: any) => ({
+  const mappedRows = rows.map(({ row, source: src }: any) => ({
     source_file: src?.fileName ?? "NewInventory.xlsx",
     sheet_name: row.sheetName,
     source_row_number: row.sourceRowNumber,
@@ -45,6 +45,11 @@ async function searchCurrentImcanRows(db: any, query: string, limit = 5): Promis
     operational_hours: row.rowData?.operational_hours ?? row.rowData?.["Operational hours"] ?? row.rowData?.["Operational Hours"],
     row_data: row.rowData,
   }));
+  const requestedNames = String(query).match(/\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/gi)?.map((name) => name.toLowerCase()) ?? [];
+  const exactRows = requestedNames.length
+    ? mappedRows.filter((row: any) => requestedNames.includes(String(row.current_versa_router_name ?? "").replace(/\s*\(old router:.*?\)/i, "").trim().toLowerCase()))
+    : [];
+  return exactRows.length ? exactRows : mappedRows;
 }
 
 const REQUEST_TYPES = ["Network", "Incident", "LAN", "Request", "SITATEX"] as const;

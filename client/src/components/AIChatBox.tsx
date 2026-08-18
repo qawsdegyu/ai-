@@ -127,8 +127,10 @@ export function AIChatBox({
   const inputAreaRef = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Filter out system messages
-  const displayMessages = messages.filter((msg) => msg.role !== "system");
+  // Filter out system messages and normalize escaped line breaks returned by older conversations.
+  const displayMessages = messages
+    .filter((msg) => msg.role !== "system")
+    .map((msg) => ({ ...msg, content: String(msg.content ?? "").replace(/\\\\n/g, "\n").replace(/\\\\t/g, "\t") }));
 
   // Calculate min-height for last assistant message to push user message to top
   const [minHeightForLastMessage, setMinHeightForLastMessage] = useState(0);
@@ -192,7 +194,7 @@ export function AIChatBox({
     <div
       ref={containerRef}
       className={cn(
-        "flex flex-col bg-card text-card-foreground rounded-lg border shadow-sm",
+        "flex min-w-0 flex-col bg-card text-card-foreground rounded-xl border shadow-sm",
         className
       )}
       style={{ height }}
@@ -225,7 +227,7 @@ export function AIChatBox({
           </div>
         ) : (
           <ScrollArea className="h-full">
-            <div className="flex flex-col space-y-4 p-4">
+            <div className="flex flex-col space-y-5 px-5 py-4 lg:px-6">
               {displayMessages.map((message, index) => {
                 // Apply min-height to last message only if NOT loading (when loading, the loading indicator gets it)
                 const isLastMessage = index === displayMessages.length - 1;
@@ -255,14 +257,14 @@ export function AIChatBox({
 
                     <div
                       className={cn(
-                        "max-w-[80%] rounded-lg px-4 py-2.5",
+                        "max-w-[92%] rounded-xl px-5 py-3 text-[15px] leading-6 shadow-sm",
                         message.role === "user"
                           ? "bg-primary text-primary-foreground"
                           : "bg-muted text-foreground"
                       )}
                     >
                       {message.role === "assistant" ? (
-                        <div className="prose prose-sm dark:prose-invert max-w-none">
+                        <div className="prose prose-sm dark:prose-invert max-w-none leading-6 [&_p]:my-2 [&_ul]:my-2 [&_li]:my-1 [&_strong]:text-white">
                           <Streamdown>{message.content}</Streamdown>
                         </div>
                       ) : (
@@ -307,7 +309,7 @@ export function AIChatBox({
       <form
         ref={inputAreaRef}
         onSubmit={handleSubmit}
-        className="flex gap-2 p-4 border-t bg-background/50 items-end"
+        className="flex gap-3 border-t bg-background/50 px-5 py-4 lg:px-6 items-end"
       >
         <Textarea
           ref={textareaRef}
