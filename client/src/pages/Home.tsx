@@ -120,7 +120,15 @@ export default function Home() {
   const deleteConversation = trpc.ai.deleteConversation.useMutation({ onSuccess: () => { setActiveConversationId(undefined); setConversationId(undefined); setAiMessages([]); void aiConversations.refetch(); } });
   const aiAsk = trpc.ai.ask.useMutation({
     onSuccess: result => { setConversationId(result.conversationId); setAiMessages(prev => [...prev, { role: "assistant", content: result.answer }]); void aiConversations.refetch(); },
-    onError: error => setAiMessages(prev => [...prev, { role: "assistant", content: `تعذر تنفيذ البحث الذكي: ${error.message}` }]),
+    onError: error => {
+      const rawMessage = String(error?.message ?? "");
+      const content = /failed to fetch|network error/i.test(rawMessage)
+        ? "The search service could not be reached. Please refresh the page and sign in again. If the problem continues, the server authentication configuration must be checked."
+        : /unauthorized|not logged in|session/i.test(rawMessage)
+          ? "Your session is not active. Please sign in again before searching."
+          : `The grounded search could not be completed. ${rawMessage || "Please try again."}`;
+      setAiMessages(prev => [...prev, { role: "assistant", content }]);
+    },
   });
   const handleAiSend = (content: string) => {
     setAiMessages(prev => [...prev, { role: "user", content }]);
