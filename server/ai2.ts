@@ -155,6 +155,31 @@ function routerSpecificRecords(rows: any[]): string {
   return records.length ? records.join("\n") : "- No router-specific issue or service record was found in the inventory row.";
 }
 
+function formatEscalationMatrix(rawText: string): string {
+  const cleaned = String(rawText || "")
+    .replace(/^\s*Internal escalation and resolver details \(complete retrieved rows\):\s*/i, "")
+    .trim();
+  if (!cleaned) return "";
+  const blocks = cleaned.split(/\n\s*---\s*\n/g).map(block => block.trim()).filter(Boolean);
+  const formatted = blocks.map((block) => {
+    const lines = block.split("\n").map(line => line.trim()).filter(Boolean);
+    const source = lines.shift() || "Internal escalation record";
+    const fields = lines.map(line => {
+      const separator = line.indexOf(":");
+      if (separator <= 0) return `- ${line}`;
+      const label = line.slice(0, separator).replace(/_/g, " ").trim();
+      const value = line.slice(separator + 1).trim();
+      return `- **${label}:** ${value}`;
+    });
+    return `### ${source}\n\n${fields.join("\n")}`;
+  });
+  return `\n\n## Internal escalation and resolver details\n\n${formatted.join("\n\n")}`;
+}
+
+function formatServiceTemplateResponse(requestType: RequestType, template: { text: string; source: any }, matrixText: string): string {
+  return `## ${requestType} service template\n\nComplete only the fields that apply to the incident or request.\n\n\`\`\`text\n${template.text}\n\`\`\`${matrixText}\n\n## Verified sources\n\n- Template: File ${template.source.filename}, Sheet ${template.source.sheet}, Row ${template.source.row}\n- Router record: File ${template.source.data_filename}, Sheet ${template.source.data_sheet}, Row ${template.source.data_row}`;
+}
+
 export function buildServiceTemplate(requestType: RequestType, router: any): { text: string; source: any } {
   const row = router?.source_row_number ?? "20";
   const file = router?.source_file ?? "NewInventory.xlsx";
@@ -552,7 +577,7 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
         return `[Sheet: ${entry.sheetName}] [Row: ${entry.sourceRowNumber}]\n${fields}`;
       }).filter(Boolean);
       if (matrixLines.length) {
-        supportingMatrixText = `\n\nInternal escalation and resolver details (complete retrieved rows):\n\n${matrixLines.join("\n\n---\n\n")}`;
+        supportingMatrixText = formatEscalationMatrix(`\n\nInternal escalation and resolver details (complete retrieved rows):\n\n${matrixLines.join("\n\n---\n\n")}`);
         rawFilesContext.push({ fileName: "IMCAN Escalation Matrix", content: supportingMatrixText });
       }
     } catch (error) {
@@ -1024,7 +1049,7 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
   if (currentImcanRows.length && targetInConversation && requestType && !issueGiven && !technicalDirectQuestion) {
     const serviceTemplate = buildServiceTemplate(requestType, currentImcanRows[0]);
     return {
-      answer: `Request type selected: ${requestType}.\n\nPlease use or complete this service template from the IMCAN workbook:\n\n${serviceTemplate.text}${supportingMatrixText}\n\nTemplate source: File ${serviceTemplate.source.filename}, Sheet ${serviceTemplate.source.sheet}, Row ${serviceTemplate.source.row}.\nRouter data source: File ${serviceTemplate.source.data_filename}, Sheet ${serviceTemplate.source.data_sheet}, Row ${serviceTemplate.source.data_row}.\n\nPlease describe the problem or request for this router.`,
+      answer: `## Router found\n\nThe router was matched to a verified IMCAN record.\n\n${formatServiceTemplateResponse(requestType, serviceTemplate, supportingMatrixText)}\n\n## Next step\n\nPlease describe the problem or request for this router.`,
       sources: currentImcanRows.slice(0, 3),
       metadata: { stage: "waiting_for_issue", language: "en", request_type: requestType, template_source: serviceTemplate.source },
       debug: debugInfo,
@@ -1034,7 +1059,7 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
   if (deterministicExcelAnswer) {
     if (requestType && currentImcanRows.length) {
       const serviceTemplate = buildServiceTemplate(requestType, currentImcanRows[0]);
-      deterministicExcelAnswer.answer = `${deterministicExcelAnswer.answer}\n\n**${requestType} Service Template**\n${serviceTemplate.text}${supportingMatrixText}\n\n**Template source:** File ${serviceTemplate.source.filename}, Sheet ${serviceTemplate.source.sheet}, Row ${serviceTemplate.source.row}.\n**Router data source:** File ${serviceTemplate.source.data_filename}, Sheet ${serviceTemplate.source.data_sheet}, Row ${serviceTemplate.source.data_row}.`;
+      deterministicExcelAnswer.answer = `${deterministicExcelAnswer.answer}\n\n${formatServiceTemplateResponse(requestType, serviceTemplate, supportingMatrixText)}`;
       deterministicExcelAnswer.metadata = { ...deterministicExcelAnswer.metadata, request_type: requestType, template_source: serviceTemplate.source };
     }
     return { ...deterministicExcelAnswer, debug: debugInfo };
