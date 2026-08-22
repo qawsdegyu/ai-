@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildInventoryContext, buildServiceTemplate, detectAssistantLanguage, formatAssistantResponse, noResultsAnswer, normalizeAssistantText, requestedLanguageLabel, sourceMatchesRetrievedContext } from "./ai2";
+import { buildInventoryContext, buildServiceTemplate, detectAssistantLanguage, formatAssistantResponse, noResultsAnswer, normalizeAssistantText, requestedLanguageLabel, shouldResetServiceFlow, sourceMatchesRetrievedContext } from "./ai2";
 import { buildContext } from "./_core/contextBuilder";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
@@ -73,6 +73,12 @@ describe("inventory AI assistant", () => {
       for (const field of fields) expect(result.text).toContain(field);
       expect(result.text).not.toContain("\\\\n");
     }
+  });
+
+  it("resets the service flow when a different Router appears in the same conversation", () => {
+    expect(shouldResetServiceFlow("PSIN2837", "VAPAMM001 LAN problem")).toBe(true);
+    expect(shouldResetServiceFlow("VAPAMM001", "VAPAMM001 LAN problem")).toBe(false);
+    expect(shouldResetServiceFlow("VAPAMM001 Network", "VAPAMM001 LAN problem")).toBe(false);
   });
 
   it("rejects an answer whose source evidence is not present in retrieved internal context", () => {

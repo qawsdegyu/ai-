@@ -137,6 +137,12 @@ function requestTypeQuestion(): string {
   return "Which service template do you need for this router? Please choose one: Network, Incident, LAN, Request, or SITATEX.";
 }
 
+export function shouldResetServiceFlow(question: string, previousUserMessage: string): boolean {
+  const currentTargets = new Set((String(question).match(/\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/gi) ?? []).map(value => value.toUpperCase()));
+  const previousTargets = new Set((String(previousUserMessage).match(/\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/gi) ?? []).map(value => value.toUpperCase()));
+  return currentTargets.size > 0 && Array.from(currentTargets).some(value => !previousTargets.has(value));
+}
+
 function routerSpecificRecords(rows: any[]): string {
   const records = rows.flatMap((row: any) => {
     const facts = [
@@ -465,8 +471,12 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
   const oneDriveCache = (global as any).oneDriveCache || new Map<string, { eTag: string, parsedData: any[] }>();
   if (!(global as any).oneDriveCache) (global as any).oneDriveCache = oneDriveCache;
 
+  const currentTargetMatches = q.match(/\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/gi) ?? [];
+  const previousTargetMatches = conversationUserText.match(/\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/gi) ?? [];
+  const hasNewTarget = shouldResetServiceFlow(q, conversationUserText);
   const targetInConversation = /\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6}|site\s*id|airport|hostname|subnet|circuit)\b/i.test(`${q} ${conversationUserText}`);
-  const requestType = extractRequestType(`${q} ${conversationUserText}`);
+  // A new Router starts a fresh service flow. Do not inherit LAN/Network/etc. from the previous Router.
+  const requestType = hasNewTarget ? extractRequestType(q) : extractRequestType(`${q} ${conversationUserText}`);
   const issueGiven = /\b(?:down|not\s+responding|not\s+working|failed|failure|outage|problem|issue|error|unreachable|offline|slow|broken)\b/i.test(q);
 
   const { getDb } = await import("./db");
@@ -500,8 +510,8 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
     };
   }
   try {
-    const identifiers = `${q} ${conversationUserText}`.match(/\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/gi) ?? [];
-    const currentSearchQuery = Array.from(new Set(identifiers.map((value) => value.toUpperCase()))).join(" ") || question;
+      const identifiers = (currentTargetMatches.length ? currentTargetMatches : previousTargetMatches);
+      const currentSearchQuery = Array.from(new Set(identifiers.map((value) => value.toUpperCase()))).join(" ") || question;
     currentImcanRows = await searchCurrentImcanRows(db, currentSearchQuery, MAX_RESULTS);
     if (currentImcanRows.length) context.push(...currentImcanRows);
   } catch (error) {
@@ -890,7 +900,7 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
         const { ilike, or, sql: dsql } = await import("drizzle-orm");
         
         // Combine current question and previous user message to ensure router names from previous turns are caught
-        const combinedSearchText = (question + " " + previousUserMessageText).replace(/\s+/g, " ").trim().toLowerCase();
+        const combinedSearchText = (hasNewTarget ? question : (question + " " + previousUserMessageText)).replace(/\s+/g, " ").trim().toLowerCase();
         const sqlSearchTerms = combinedSearchText.split(" ").filter(w => w.length > 2);
         
         if (sqlSearchTerms.length > 0) {
