@@ -176,8 +176,47 @@ function formatEscalationMatrix(rawText: string): string {
   return `\n\n## Internal escalation and resolver details\n\n${formatted.join("\n\n")}`;
 }
 
+function formatSourceDetails(source: any, label = "Primary verified source", relatedSources: string[] = []): string {
+  const s = source ?? {};
+  const rows: Array<[string, unknown]> = [
+    ["Source type", s.source_type ?? s.sourceType ?? "Internal IMCAN source"],
+    ["File", s.source_file ?? s.filename ?? s.file_name ?? "Not available"],
+    ["File ID", s.file_id ?? s.fileId ?? null],
+    ["File hash", s.file_hash ?? s.fileHash ?? null],
+    ["Sheet", s.sheet_name ?? s.sheet ?? "Not available"],
+    ["Row", s.source_row_number ?? s.row ?? null],
+    ["Cell", s.cell ?? s.cell_address ?? null],
+    ["Column", s.column ?? null],
+    ["Router", s.router_name ?? s.routerName ?? s.current_versa_router_name ?? null],
+    ["Site ID", s.site_id ?? s.siteId ?? null],
+    ["Evidence", s.evidence ?? s.raw_value ?? s.value ?? null],
+    ["Calculated value", s.calculated_value ?? s.calculatedValue ?? null],
+    ["Verification method", s.method ?? "Matched against retrieved IMCAN context"],
+  ];
+  const table = rows
+    .filter(([, value]) => value !== null && value !== undefined && String(value).trim() !== "")
+    .map(([field, value]) => `| ${field} | ${String(value).replace(/\|/g, "\\|").replace(/\n/g, "<br>")} |`)
+    .join("\n");
+  const related = relatedSources.filter(Boolean).map(value => `- ${value}`).join("\n");
+  return `\n\n## Detailed source verification\n\n### ${label}\n\n| Field | Verified value |\n|---|---|\n${table || "| Status | No source metadata available |"}${related ? `\n\n### Related internal sources\n\n${related}` : ""}`;
+}
+
 function formatServiceTemplateResponse(requestType: RequestType, template: { text: string; source: any }, matrixText: string): string {
-  return `## ${requestType} service template\n\nComplete only the fields that apply to the incident or request.\n\n\`\`\`text\n${template.text}\n\`\`\`${matrixText}\n\n## Verified sources\n\n- Template: File ${template.source.filename}, Sheet ${template.source.sheet}, Row ${template.source.row}\n- Router record: File ${template.source.data_filename}, Sheet ${template.source.data_sheet}, Row ${template.source.data_row}`;
+  const templateSource = {
+    source_type: "Excel service template",
+    source_file: template.source.filename,
+    sheet_name: template.source.sheet,
+    source_row_number: template.source.row,
+    method: "Template selected from the verified IMCAN workbook",
+  };
+  const routerSource = {
+    source_type: "Excel inventory record",
+    source_file: template.source.data_filename,
+    sheet_name: template.source.data_sheet,
+    source_row_number: template.source.data_row,
+    method: "Router record matched before template generation",
+  };
+  return `## ${requestType} service template\n\nComplete only the fields that apply to the incident or request.\n\n\`\`\`text\n${template.text}\n\`\`\`${matrixText}${formatSourceDetails(templateSource, "Service template source")}\n${formatSourceDetails(routerSource, "Router record source")}`;
 }
 
 export function buildServiceTemplate(requestType: RequestType, router: any): { text: string; source: any } {
@@ -1201,7 +1240,7 @@ Rules:
     if (!isNotFound) {
       const matchedContext = rawFilesContext.find(ctx => ctx.fileName === s.source_file);
       const googleDriveLink = (matchedContext as any)?.googleDriveUrl;
-      sourceText = `\n\n**Verified internal source**\n- File: ${s.source_file || "Not available"}\n- Sheet: ${s.sheet_name || "Not available"}\n- Row: ${s.source_row_number ?? "Not available"}\n- Router: ${s.router_name || "Not available"}\n- Site ID: ${s.site_id || "Not available"}\n- Evidence: ${s.evidence || "Not available"}${googleDriveLink ? `\n- [Open internal source](${googleDriveLink})` : ""}`;
+      sourceText = `${formatSourceDetails({ ...s, method: s.method || "LLM answer verified against retrieved IMCAN context" }, "Primary verified source", Array.isArray(parsedContent.related_sources) ? parsedContent.related_sources : [])}${googleDriveLink ? `\n\n[Open internal source](${googleDriveLink})` : ""}`;
     }
     
     return {
