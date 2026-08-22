@@ -29,16 +29,11 @@ async function searchCurrentImcanRows(db: any, query: string, limit = 5): Promis
   if (cached) chatbotRouterCache.delete(cacheKey);
   const terms = normalizedQuery.split(/\s+/).filter((term) => term.length > 1);
   if (!terms.length) return [];
-  const source = await db.select({ id: imcanSources.id, fileName: imcanSources.fileName })
-    .from(imcanSources)
-    .where(drizzleEq(imcanSources.hash, NEW_INVENTORY_HASH))
-    .limit(1);
-  if (!source.length) return [];
   const termConditions = terms.map((term) => drizzleIlike(imcanRows.searchText, `%${term}%`));
   const rows = await db.select({ row: imcanRows, source: imcanSources })
     .from(imcanRows)
     .leftJoin(imcanSources, drizzleEq(imcanRows.sourceId, imcanSources.id))
-    .where(drizzleAnd(drizzleEq(imcanRows.sourceId, source[0].id), drizzleOr(...termConditions)))
+    .where(drizzleOr(...termConditions))
     .limit(Math.min(limit, 5));
   const mappedRows = rows.map(({ row, source: src }: any) => ({
     source_file: src?.fileName ?? "NewInventory.xlsx",
