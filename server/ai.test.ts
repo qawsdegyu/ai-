@@ -77,6 +77,7 @@ describe("inventory AI assistant", () => {
 
   it("resets the service flow when a different Router appears in the same conversation", () => {
     expect(shouldResetServiceFlow("PSIN2837", "VAPAMM001 LAN problem")).toBe(true);
+    expect(shouldResetServiceFlow("CAIRHSV-3650-1", "VAPAMM001 LAN problem")).toBe(true);
     expect(shouldResetServiceFlow("VAPAMM001", "VAPAMM001 LAN problem")).toBe(false);
     expect(shouldResetServiceFlow("VAPAMM001 Network", "VAPAMM001 LAN problem")).toBe(false);
   });

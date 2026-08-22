@@ -62,7 +62,7 @@ async function searchCurrentImcanRows(db: any, query: string, limit = 5): Promis
       .join("\\n"),
     row_data: row.rowData,
   }));
-  const requestedNames = String(query).match(/\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/gi)?.map((name) => name.toLowerCase()) ?? [];
+  const requestedNames = String(query).match(/\b(?:[A-Z][A-Z0-9]*(?:[-_][A-Z0-9]+)+|VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/gi)?.map((name) => name.toLowerCase()) ?? [];
   const exactRows = requestedNames.length
     ? mappedRows.filter((row: any) => requestedNames.includes(String(row.current_versa_router_name ?? "").replace(/\s*\(old router:.*?\)/i, "").trim().toLowerCase()))
     : [];
@@ -142,8 +142,8 @@ function requestTypeQuestion(): string {
 }
 
 export function shouldResetServiceFlow(question: string, previousUserMessage: string): boolean {
-  const currentTargets = new Set((String(question).match(/\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/gi) ?? []).map(value => value.toUpperCase()));
-  const previousTargets = new Set((String(previousUserMessage).match(/\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/gi) ?? []).map(value => value.toUpperCase()));
+  const currentTargets = new Set((String(question).match(/\b(?:[A-Z][A-Z0-9]*(?:[-_][A-Z0-9]+)+|VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/gi) ?? []).map(value => value.toUpperCase()));
+  const previousTargets = new Set((String(previousUserMessage).match(/\b(?:[A-Z][A-Z0-9]*(?:[-_][A-Z0-9]+)+|VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/gi) ?? []).map(value => value.toUpperCase()));
   return currentTargets.size > 0 && Array.from(currentTargets).some(value => !previousTargets.has(value));
 }
 
@@ -446,7 +446,7 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
 
   // Clarify vague operational complaints without querying the whole database.
   const q = String(question).trim();
-  const hasTarget = /\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6}|site\s*id|airport|hostname|subnet|circuit)\b/i.test(q);
+  const hasTarget = /\b(?:(?:[A-Z][A-Z0-9]*(?:[-_][A-Z0-9]+)+)|(?:VAP[A-Z0-9]+)|(?:JFK[A-Z0-9]+)|(?:[A-Z]{2,8}\d{2,6})|site\s*id|airport|hostname|subnet|circuit)\b/i.test(q);
   const generalProblem = /^(?:i\s+have|the|there(?:'s| is)|we\s+have|need)\b.*\b(?:router|network|internet|connectivity|vpn|link|circuit|switch|printer|problem|issue|outage|down|not\s+responding)\b/i.test(q);
   const technicalDirectQuestion = /\b(?:printer|firmware|printerset|vcom|usb|xml|amadeus|atb|btp|configure|configuration|driver|scc|resolver|escalation|dns)\b/i.test(q);
   if (generalProblem && !hasTarget && !technicalDirectQuestion) {
@@ -483,10 +483,10 @@ export async function answerInventoryQuestion({ question, language, fileId, conv
   const oneDriveCache = (global as any).oneDriveCache || new Map<string, { eTag: string, parsedData: any[] }>();
   if (!(global as any).oneDriveCache) (global as any).oneDriveCache = oneDriveCache;
 
-  const currentTargetMatches = q.match(/\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/gi) ?? [];
-  const previousTargetMatches = conversationUserText.match(/\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/gi) ?? [];
+  const currentTargetMatches = q.match(/\b(?:[A-Z][A-Z0-9]*(?:[-_][A-Z0-9]+)+|VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/gi) ?? [];
+  const previousTargetMatches = conversationUserText.match(/\b(?:[A-Z][A-Z0-9]*(?:[-_][A-Z0-9]+)+|VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/gi) ?? [];
   const hasNewTarget = shouldResetServiceFlow(q, conversationUserText);
-  const targetInConversation = /\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6}|site\s*id|airport|hostname|subnet|circuit)\b/i.test(`${q} ${conversationUserText}`);
+  const targetInConversation = /\b(?:(?:[A-Z][A-Z0-9]*(?:[-_][A-Z0-9]+)+)|(?:VAP[A-Z0-9]+)|(?:JFK[A-Z0-9]+)|(?:[A-Z]{2,8}\d{2,6})|site\s*id|airport|hostname|subnet|circuit)\b/i.test(`${q} ${conversationUserText}`);
   // A new Router starts a fresh service flow. Do not inherit LAN/Network/etc. from the previous Router.
   const requestType = hasNewTarget ? extractRequestType(q) : extractRequestType(`${q} ${conversationUserText}`);
   const issueGiven = /\b(?:down|not\s+responding|not\s+working|failed|failure|outage|problem|issue|error|unreachable|offline|slow|broken)\b/i.test(q);

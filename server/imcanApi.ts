@@ -124,7 +124,7 @@ async function searchExcelRows(opts: {
 
   // Enforce hard cap: never more than MAX_CLIENT_LIMIT rows
   const safeLimit = Math.min(limit, MAX_CLIENT_LIMIT);
-  const cacheableRouterQuery = /\b(?:VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/i.test(query) || Boolean(siteId);
+  const cacheableRouterQuery = /\b(?:[A-Z][A-Z0-9]*(?:[-_][A-Z0-9]+)+|VAP[A-Z0-9]+|JFK[A-Z0-9]+|[A-Z]{2,8}\d{2,6})\b/i.test(query) || Boolean(siteId);
   const cacheKey = cacheableRouterQuery ? routerSearchCacheKey({ query, sheet, country, city, siteId, sourceHash, limit: safeLimit }) : "";
   if (cacheKey) {
     const cached = routerSearchCache.get(cacheKey);
