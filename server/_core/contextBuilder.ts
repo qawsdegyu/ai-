@@ -68,6 +68,7 @@ export interface CompactResult {
   full_site_address?: string;
   contact_details?: string;
   operational_hours?: string;
+  template_sections?: string;
   content?: string;
   source_score?: number;
 }
@@ -98,6 +99,13 @@ export function toCompactResult(
     site_id: truncate(row.site_id ?? row.siteId ?? row.row_data?.["Site ID"] ?? row.row_data?.["SITE ID"], 80),
     full_site_address: truncate(row.full_site_address ?? row.location ?? row.row_data?.["Full Site Address"], 1200),
     remarks: truncate(row.remarks ?? row.row_data?.["Remarks"] ?? row.row_data?.["Site Important Remarks"], 1500),
+    template_sections: truncate(
+      row.template_sections ?? Object.entries(row.row_data ?? {})
+        .filter(([key, value]) => /fe\s*group|assignment|proactive|important\s*remarks|escalation|obs|asp|matrix|mail|remarks?/i.test(key) && value !== null && value !== undefined && String(value).trim())
+        .map(([key, value]) => `${key}: ${String(value).trim()}`)
+        .join("\\n"),
+      12000
+    ),
     content: truncate(row._raw ?? row.content, 4000),
     source_score: typeof row.score === "number" ? Math.round(row.score * 100) / 100 : undefined,
   };
@@ -179,6 +187,7 @@ export function buildContext(
       summary: r.summary ? r.summary.slice(0, 500) : undefined,
       remarks: r.remarks ? r.remarks.slice(0, 500) : undefined,
       full_site_address: r.full_site_address ? r.full_site_address.slice(0, 800) : undefined,
+      template_sections: r.template_sections ? r.template_sections.slice(0, 12000) : undefined,
       content: r.content ? r.content.slice(0, 3000) : undefined,
       source_score: r.source_score,
     }));
